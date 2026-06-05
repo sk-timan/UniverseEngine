@@ -1,0 +1,19 @@
+schema: spec-driven
+created: 2026-03-12
+artifacts:
+  - id: proposal
+    title: 渲染组件与资产体系实现提案
+    file: proposal.md
+    status: done
+  - id: design
+    title: 渲染组件与资产体系设计
+    file: design.md
+    status: done
+  - id: tasks
+    title: 实现任务清单
+    file: tasks.md
+    status: done
+  - id: spec
+    title: 渲染体系架构规范
+    file: ../docs/rendering-architecture-design/spec.md
+    status: done

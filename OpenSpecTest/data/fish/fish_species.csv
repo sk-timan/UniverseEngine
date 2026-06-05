@@ -1,0 +1,4 @@
+id,name,minWeightKg,maxWeightKg,powerCurve
+crucian,Crucian Carp,0.2,1.1,calm
+carp,Common Carp,1.0,8.0,steady
+pike,Northern Pike,1.5,12.0,burst

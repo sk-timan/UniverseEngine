@@ -1,0 +1,30 @@
+# 白名单策略：默认忽略全部，仅提交红框内对象
+
+# --- 仓库根目录 ---
+/*
+!/.gitignore
+!/docs/
+!/openspec/
+!/OpenSpecTest/
+!/build_win.bat
+!/CMakeLists.txt
+!/CMakeSettings.json
+
+# 允许白名单目录下的全部内容
+!/docs/**
+!/openspec/**
+
+# --- OpenSpecTest 子项目 ---
+/OpenSpecTest/*
+!/OpenSpecTest/data/
+!/OpenSpecTest/Shader/
+!/OpenSpecTest/src/
+!/OpenSpecTest/thirdparty/
+!/OpenSpecTest/CMakeLists.txt
+!/OpenSpecTest/OpenSpecTest.cpp
+!/OpenSpecTest/OpenSpecTest.h
+
+!/OpenSpecTest/data/**
+!/OpenSpecTest/Shader/**
+!/OpenSpecTest/src/**
+!/OpenSpecTest/thirdparty/**

@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "world": {
+    "map_id": "mvp_pond_01",
+    "spawn": [0.0, 2.0, -8.0]
+  },
+  "economy": {
+    "starting_coins": 100
+  }
+}
