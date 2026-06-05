@@ -28,3 +28,10 @@
 !/OpenSpecTest/Shader/**
 !/OpenSpecTest/src/**
 !/OpenSpecTest/thirdparty/**
+
+# thirdparty 预编译产物（本地保留，不提交）
+/OpenSpecTest/thirdparty/**/bin/
+/OpenSpecTest/thirdparty/**/lib/Debug/
+/OpenSpecTest/thirdparty/**/lib/Release/
+/OpenSpecTest/thirdparty/**/*.pdb
+/OpenSpecTest/thirdparty/**/*.exp
