@@ -4,6 +4,8 @@
 #include <cmath>
 #include <utility>
 
+#include <nlohmann/json.hpp>
+
 #include "core/ObjectRegistry.h"
 
 namespace
@@ -116,4 +118,128 @@ const std::vector<USkinnedAsset::FSkinVertex>& USkinnedAsset::GetSkinVertices() 
 bool USkinnedAsset::HasResidentGeometryData() const
 {
 	return !SkinVertices_.empty();
+}
+
+void USkinnedAsset::Serialize(nlohmann::json* OutObjectJson) const
+{
+	UStreamableRenderAsset::Serialize(OutObjectJson);
+	if (OutObjectJson == nullptr)
+	{
+		return;
+	}
+
+	nlohmann::json BonesJson = nlohmann::json::array();
+	for (const FBone& Bone : Skeleton_)
+	{
+		BonesJson.push_back(nlohmann::json{
+			{"name", Bone.Name},
+			{"parent_index", Bone.ParentIndex},
+			{"reference_pose", nlohmann::json{
+				{"translation", nlohmann::json{{"x", Bone.ReferencePose.Translation.X}, {"y", Bone.ReferencePose.Translation.Y}, {"z", Bone.ReferencePose.Translation.Z}}},
+				{"rotation", nlohmann::json{{"pitch", Bone.ReferencePose.Rotation.Pitch}, {"yaw", Bone.ReferencePose.Rotation.Yaw}, {"roll", Bone.ReferencePose.Rotation.Roll}}},
+				{"scale", nlohmann::json{{"x", Bone.ReferencePose.Scale.X}, {"y", Bone.ReferencePose.Scale.Y}, {"z", Bone.ReferencePose.Scale.Z}}}
+			}}
+		});
+	}
+
+	nlohmann::json VerticesJson = nlohmann::json::array();
+	for (const FSkinVertex& Vertex : SkinVertices_)
+	{
+		VerticesJson.push_back(nlohmann::json{
+			{"position", nlohmann::json{{"x", Vertex.Position.X}, {"y", Vertex.Position.Y}, {"z", Vertex.Position.Z}}},
+			{"normal", nlohmann::json{{"x", Vertex.Normal.X}, {"y", Vertex.Normal.Y}, {"z", Vertex.Normal.Z}}},
+			{"tex_coord", nlohmann::json{{"x", Vertex.TexCoord.X}, {"y", Vertex.TexCoord.Y}}},
+			{"tangent", nlohmann::json{{"x", Vertex.Tangent.X}, {"y", Vertex.Tangent.Y}, {"z", Vertex.Tangent.Z}, {"w", Vertex.Tangent.W}}},
+			{"bone_indices", std::vector<int32_t>(Vertex.BoneIndices.begin(), Vertex.BoneIndices.end())},
+			{"bone_weights", std::vector<float>(Vertex.BoneWeights.begin(), Vertex.BoneWeights.end())}
+		});
+	}
+
+	(*OutObjectJson)["class"] = "USkinnedAsset";
+	(*OutObjectJson)["skeleton"] = std::move(BonesJson);
+	(*OutObjectJson)["skin_vertices"] = std::move(VerticesJson);
+	(*OutObjectJson)["total_bounds"] = nlohmann::json{
+		{"origin", nlohmann::json{{"x", TotalBounds_.Origin.X}, {"y", TotalBounds_.Origin.Y}, {"z", TotalBounds_.Origin.Z}}},
+		{"extent", nlohmann::json{{"x", TotalBounds_.Extent.X}, {"y", TotalBounds_.Extent.Y}, {"z", TotalBounds_.Extent.Z}}},
+		{"sphere_radius", TotalBounds_.SphereRadius}
+	};
+}
+
+USkinnedAsset* USkinnedAsset::DeserializeBase(const nlohmann::json& InObjectJson, std::string* OutErrorMessage)
+{
+	(void)OutErrorMessage;
+	std::string ObjectName = InObjectJson.value("object_name", std::string("SkinnedAsset"));
+	USkinnedAsset* Asset = new USkinnedAsset(0, ObjectName, nullptr);
+	if (InObjectJson.contains("asset_path"))
+	{
+		Asset->SetAssetPath(InObjectJson.at("asset_path").get<std::string>());
+	}
+
+	if (InObjectJson.contains("skeleton"))
+	{
+		std::vector<FBone> Bones;
+		for (const nlohmann::json& BoneJson : InObjectJson.at("skeleton"))
+		{
+			FBone Bone;
+			Bone.Name = BoneJson.at("name").get<std::string>();
+			Bone.ParentIndex = BoneJson.at("parent_index").get<int32_t>();
+			if (BoneJson.contains("reference_pose"))
+			{
+				const auto& PoseJson = BoneJson.at("reference_pose");
+				const auto& Translation = PoseJson.at("translation");
+				Bone.ReferencePose.Translation.X = Translation.at("x").get<float>();
+				Bone.ReferencePose.Translation.Y = Translation.at("y").get<float>();
+				Bone.ReferencePose.Translation.Z = Translation.at("z").get<float>();
+				const auto& Rotation = PoseJson.at("rotation");
+				Bone.ReferencePose.Rotation.Pitch = Rotation.at("pitch").get<float>();
+				Bone.ReferencePose.Rotation.Yaw = Rotation.at("yaw").get<float>();
+				Bone.ReferencePose.Rotation.Roll = Rotation.at("roll").get<float>();
+				const auto& Scale = PoseJson.at("scale");
+				Bone.ReferencePose.Scale.X = Scale.at("x").get<float>();
+				Bone.ReferencePose.Scale.Y = Scale.at("y").get<float>();
+				Bone.ReferencePose.Scale.Z = Scale.at("z").get<float>();
+			}
+			Bones.push_back(Bone);
+		}
+		Asset->SetSkeleton(Bones);
+	}
+
+	if (InObjectJson.contains("skin_vertices"))
+	{
+		std::vector<FSkinVertex> Vertices;
+		for (const nlohmann::json& VertexJson : InObjectJson.at("skin_vertices"))
+		{
+			FSkinVertex Vertex;
+			const auto& Position = VertexJson.at("position");
+			Vertex.Position.X = Position.at("x").get<float>();
+			Vertex.Position.Y = Position.at("y").get<float>();
+			Vertex.Position.Z = Position.at("z").get<float>();
+			const auto& Normal = VertexJson.at("normal");
+			Vertex.Normal.X = Normal.at("x").get<float>();
+			Vertex.Normal.Y = Normal.at("y").get<float>();
+			Vertex.Normal.Z = Normal.at("z").get<float>();
+			const auto& TexCoord = VertexJson.at("tex_coord");
+			Vertex.TexCoord.X = TexCoord.at("x").get<float>();
+			Vertex.TexCoord.Y = TexCoord.at("y").get<float>();
+			const auto& Tangent = VertexJson.at("tangent");
+			Vertex.Tangent.X = Tangent.at("x").get<float>();
+			Vertex.Tangent.Y = Tangent.at("y").get<float>();
+			Vertex.Tangent.Z = Tangent.at("z").get<float>();
+			Vertex.Tangent.W = Tangent.at("w").get<float>();
+			const auto BoneIndices = VertexJson.at("bone_indices").get<std::vector<int32_t>>();
+			const auto BoneWeights = VertexJson.at("bone_weights").get<std::vector<float>>();
+			for (size_t Index = 0; Index < Vertex.BoneIndices.size() && Index < BoneIndices.size(); ++Index)
+			{
+				Vertex.BoneIndices[Index] = BoneIndices[Index];
+			}
+			for (size_t Index = 0; Index < Vertex.BoneWeights.size() && Index < BoneWeights.size(); ++Index)
+			{
+				Vertex.BoneWeights[Index] = BoneWeights[Index];
+			}
+			Vertices.push_back(Vertex);
+		}
+		Asset->SetSkinVertices(Vertices);
+	}
+
+	return Asset;
 }

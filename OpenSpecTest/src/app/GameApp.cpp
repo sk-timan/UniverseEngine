@@ -17,6 +17,10 @@
 #include "editor/EditorPicking.h"
 #include "editor/EditorTransformGizmo.h"
 #include "editor/EditorViewMatrices.h"
+#include "asset/AssetRegistry.h"
+#include "asset/MeshImportFactory.h"
+#include "asset/ProjectPaths.h"
+#include "data/MeshImporter.h"
 #include "world/Actor.h"
 #include "world/Level.h"
 #include "components/SceneComponent.h"
@@ -873,8 +877,66 @@ bool GameApp::SaveCurrentLevel(const std::filesystem::path& InFilePath, std::str
 	return true;
 }
 
-bool GameApp::ImportModelToActiveLevel(
-	const std::filesystem::path& InFilePath,
+bool GameApp::ImportAssetFromSourceFile(
+	const std::filesystem::path& InSourceFile,
+	const std::string& InContentAssetPath,
+	std::string* OutSoftObjectPath,
+	std::string* OutErrorMessage)
+{
+	if (OutErrorMessage != nullptr)
+	{
+		OutErrorMessage->clear();
+	}
+	if (OutSoftObjectPath != nullptr)
+	{
+		OutSoftObjectPath->clear();
+	}
+	if (InSourceFile.empty() || !std::filesystem::exists(InSourceFile))
+	{
+		if (OutErrorMessage != nullptr)
+		{
+			*OutErrorMessage = "Source model file does not exist: " + InSourceFile.string();
+		}
+		return false;
+	}
+
+	const std::filesystem::path CanonicalPath = std::filesystem::weakly_canonical(InSourceFile);
+	const std::string AssetPath = InContentAssetPath.empty()
+		? std::string("Meshes/Imported/") + CanonicalPath.stem().string()
+		: InContentAssetPath;
+	const std::string ObjectName = std::filesystem::path(AssetPath).filename().string();
+	const bool bIsSkeletal = MeshImporter::ProbeIsSkeletalModel(CanonicalPath);
+
+	FMeshImportRequest ImportRequest;
+	ImportRequest.SourceFile = CanonicalPath;
+	ImportRequest.AssetPath = AssetPath;
+	ImportRequest.ObjectName = ObjectName.empty() ? CanonicalPath.stem().string() : ObjectName;
+
+	std::string SoftPath;
+	if (bIsSkeletal)
+	{
+		if (UMeshImportFactory::ImportSkeletalMeshAndSave(ImportRequest, &SoftPath, OutErrorMessage) == nullptr)
+		{
+			return false;
+		}
+	}
+	else
+	{
+		if (UMeshImportFactory::ImportStaticMeshAndSave(ImportRequest, &SoftPath, OutErrorMessage) == nullptr)
+		{
+			return false;
+		}
+	}
+
+	if (OutSoftObjectPath != nullptr)
+	{
+		*OutSoftObjectPath = SoftPath;
+	}
+	return true;
+}
+
+bool GameApp::LoadModelToActiveLevel(
+	const std::filesystem::path& InUAssetFilePath,
 	const FActorTransform& InActorTransform,
 	std::string* OutErrorMessage)
 {
@@ -901,15 +963,21 @@ bool GameApp::ImportModelToActiveLevel(
 		return false;
 	}
 
-	AActor* ImportedActor = nullptr;
-	if (!ActiveLevel->ImportModelFromFile(InFilePath, InActorTransform, &ImportedActor, OutErrorMessage))
+	std::string SoftPath;
+	if (!TryBuildSoftPathFromUAssetFile(InUAssetFilePath, &SoftPath, OutErrorMessage))
 	{
 		return false;
 	}
 
-	if (ImportedActor != nullptr)
+	AActor* LoadedActor = nullptr;
+	if (!ActiveLevel->SpawnModelFromSoftPath(SoftPath, InActorTransform, &LoadedActor, OutErrorMessage))
 	{
-		SelectActor(ImportedActor->GetObjectId());
+		return false;
+	}
+
+	if (LoadedActor != nullptr)
+	{
+		SelectActor(LoadedActor->GetObjectId());
 	}
 	BumpSceneRevision();
 	RefreshActiveLevelRender();
@@ -1024,6 +1092,10 @@ bool GameApp::InitializeDataDrivenResources(std::wstring* OutErrorMessage)
 	{
 		std::filesystem::create_directories(m_maps_directory_);
 	}
+
+	std::error_code ContentDirError;
+	std::filesystem::create_directories(GProjectContentDirectory, ContentDirError);
+	FAssetRegistry::Get().ScanContentDirectory();
 
 	std::string LoaderError;
 	if (!m_resource_loader_.Initialize(ExecutableDir / "data", &LoaderError))
@@ -1240,19 +1312,6 @@ bool GameApp::ResolveMapModelPathByMapId(
 
 void GameApp::SyncRendererLevelInput()
 {
-	if (m_world_ == nullptr)
-	{
-		m_renderer_.SetMapModelPath(std::filesystem::path());
-		return;
-	}
-
-	const std::filesystem::path* ActiveMapModelPath = m_world_->GetActiveMapModelPath();
-	if (ActiveMapModelPath != nullptr)
-	{
-		m_renderer_.SetMapModelPath(*ActiveMapModelPath);
-		return;
-	}
-
 	m_renderer_.SetMapModelPath(std::filesystem::path());
 }
 

@@ -247,7 +247,6 @@ UStaticMesh* MeshImporter::ImportStaticMesh(const std::filesystem::path& InFileP
 	StaticMesh->SetVertices(MergedVertices);
 	StaticMesh->SetIndices(MergedIndices);
 	StaticMesh->RebuildSectionBounds();
-	ResourceRegistry::Get().RegisterAsset(StaticMesh);
 
 	if (Scene_ != nullptr)
 	{
@@ -331,8 +330,6 @@ USkeletalMesh* MeshImporter::ImportSkeletalMesh(const std::filesystem::path& InF
 
 	SkeletalMesh->SetSkinVertices(MergedSkinVertices);
 	SkeletalMesh->SetIndices(MergedIndices);
-
-	ResourceRegistry::Get().RegisterAsset(SkeletalMesh);
 
 	return SkeletalMesh;
 }

@@ -49,8 +49,8 @@ public:
 
 	AActor* SpawnActor(const FActorSpawnParams& InParams, std::string* OutErrorMessage);
 	AActor* SpawnActorOfClass(const UClass& InActorClass, const FActorSpawnParams& InParams, std::string* OutErrorMessage);
-	bool ImportModelFromFile(
-		const std::filesystem::path& InFilePath,
+	bool SpawnModelFromSoftPath(
+		const std::string& InSoftObjectPath,
 		const FActorTransform& InActorTransform,
 		AActor** OutActor,
 		std::string* OutErrorMessage);
@@ -71,7 +71,6 @@ public:
 private:
 	UStaticMeshComponent* ResolveStaticMeshComponentAsset(UActorComponent* InComponent, std::string* OutErrorMessage);
 	USkeletalMeshComponent* ResolveSkeletalMeshComponentAsset(UActorComponent* InComponent, std::string* OutErrorMessage);
-	std::filesystem::path ResolveAssetImportPath(const std::string& InAssetId) const;
 
 	ObjectRegistry* ObjectRegistry_ = nullptr;
 	std::string LevelId_;

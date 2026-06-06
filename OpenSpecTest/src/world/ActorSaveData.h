@@ -45,6 +45,7 @@ struct FComponentSaveData
 	FVector3 RelativeRotation;
 	FVector3 RelativeScale{1.0f, 1.0f, 1.0f};
 	std::string MeshAssetId;
+	std::string MeshAssetPath;
 	std::vector<FMaterialOverrideSaveData> MaterialOverrides;
 	int ForcedLODLevel = 0;
 	bool bVisible = true;
@@ -64,6 +65,7 @@ inline void to_json(nlohmann::json& OutJson, const FComponentSaveData& InData)
 		{"relative_rotation", InData.RelativeRotation},
 		{"relative_scale", InData.RelativeScale},
 		{"mesh_asset_id", InData.MeshAssetId},
+		{"mesh_asset_path", InData.MeshAssetPath.empty() ? InData.MeshAssetId : InData.MeshAssetPath},
 		{"material_overrides", InData.MaterialOverrides},
 		{"forced_lod_level", InData.ForcedLODLevel},
 		{"visible", InData.bVisible}
@@ -115,6 +117,14 @@ inline void from_json(const nlohmann::json& InJson, FComponentSaveData& OutData)
 	if (InJson.contains("mesh_asset_id"))
 	{
 		InJson.at("mesh_asset_id").get_to(OutData.MeshAssetId);
+	}
+	if (InJson.contains("mesh_asset_path"))
+	{
+		InJson.at("mesh_asset_path").get_to(OutData.MeshAssetPath);
+	}
+	else
+	{
+		OutData.MeshAssetPath = OutData.MeshAssetId;
 	}
 	if (InJson.contains("material_overrides"))
 	{

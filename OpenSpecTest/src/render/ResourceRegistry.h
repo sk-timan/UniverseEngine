@@ -1,5 +1,6 @@
 #pragma once
 
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -13,9 +14,13 @@ public:
 
 	void RegisterAsset(UStreamableRenderAsset* InAsset);
 	void UnregisterAsset(const std::string& InAssetId);
+	void UnregisterAssetByPath(const std::filesystem::path& InAssetPath);
 
 	UStreamableRenderAsset* FindAsset(const std::string& InAssetId);
 	const UStreamableRenderAsset* FindAsset(const std::string& InAssetId) const;
+
+	// Accepts SoftObjectPath (Meshes/Foo.Bar) or asset path (Meshes/Foo).
+	UStreamableRenderAsset* FindAssetByReference(const std::string& InReference);
 
 	template<typename T>
 	T* FindAsset(const std::string& InAssetId);

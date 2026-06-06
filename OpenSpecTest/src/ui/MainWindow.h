@@ -115,7 +115,8 @@ private:
 	void OnOpenMapClicked();
 	void OnSaveMapClicked();
 	void OnSaveAsMapClicked();
-	void OnImportModelClicked();
+	void OnImportAssetClicked();
+	void OnLoadModelClicked();
 	void OnEditorPreferencesClicked();
 	void OnEditorPerformanceClicked();
 	void OnExitClicked();
@@ -130,7 +131,8 @@ private:
 	QPointer<QAction> m_open_map_action_;
 	QPointer<QAction> m_save_map_action_;
 	QPointer<QAction> m_save_as_map_action_;
-	QPointer<QAction> m_import_model_action_;
+	QPointer<QAction> m_import_asset_action_;
+	QPointer<QAction> m_load_model_action_;
 	QPointer<QAction> m_editor_preferences_action_;
 	QPointer<QAction> m_editor_performance_action_;
 	QPointer<QLabel> m_runtime_hint_label_;

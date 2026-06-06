@@ -19,6 +19,7 @@
 # --- OpenSpecTest 子项目 ---
 /OpenSpecTest/*
 !/OpenSpecTest/data/
+!/OpenSpecTest/Content/
 !/OpenSpecTest/Shader/
 !/OpenSpecTest/src/
 !/OpenSpecTest/thirdparty/
@@ -27,6 +28,7 @@
 !/OpenSpecTest/OpenSpecTest.h
 
 !/OpenSpecTest/data/**
+!/OpenSpecTest/Content/**
 !/OpenSpecTest/Shader/**
 !/OpenSpecTest/src/**
 !/OpenSpecTest/thirdparty/**

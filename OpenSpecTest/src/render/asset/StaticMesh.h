@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 
+#include <nlohmann/json_fwd.hpp>
+
 #include "core/UClass.h"
 #include "render/asset/StreamableRenderAsset.h"
 
@@ -52,6 +54,7 @@ public:
 	virtual FBounds GetBounds() const override;
 
 	virtual void Serialize(nlohmann::json* OutObjectJson) const override;
+	static UStaticMesh* Deserialize(const nlohmann::json& InObjectJson, std::string* OutErrorMessage);
 
 private:
 	std::vector<FVertex> Vertices_;

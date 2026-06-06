@@ -53,8 +53,13 @@ public:
 	bool LoadLevelFromFile(const std::filesystem::path& InFilePath, std::string* OutErrorMessage);
 	bool SaveCurrentLevel(const std::filesystem::path& InFilePath, std::string* OutErrorMessage);
 	bool SaveCurrentLevelToDefault(std::string* OutErrorMessage);
-	bool ImportModelToActiveLevel(
-		const std::filesystem::path& InFilePath,
+	bool ImportAssetFromSourceFile(
+		const std::filesystem::path& InSourceFile,
+		const std::string& InContentAssetPath,
+		std::string* OutSoftObjectPath,
+		std::string* OutErrorMessage);
+	bool LoadModelToActiveLevel(
+		const std::filesystem::path& InUAssetFilePath,
 		const FActorTransform& InActorTransform,
 		std::string* OutErrorMessage);
 	void RefreshActiveLevelRender(bool bInvalidateSceneCache = true);

@@ -10,12 +10,18 @@
 
 #include "components/StaticMeshComponent.h"
 #include "components/SkeletalMeshComponent.h"
+#include "components/MeshComponent.h"
 #include "core/ObjectRegistry.h"
+#include "asset/AssetManager.h"
+#include "asset/MeshImportFactory.h"
 #include "data/MeshImporter.h"
+#include "asset/ProjectPaths.h"
+#include "asset/SoftObjectPath.h"
 #include "math/FRotator3.h"
 #include "render/RenderCollector.h"
-#include "render/asset/StaticMesh.h"
 #include "render/asset/SkeletalMesh.h"
+#include "render/asset/StreamableRenderAsset.h"
+#include "render/asset/StaticMesh.h"
 #include "serialization/ComponentSerializer.h"
 #include "world/World.h"
 #include "world/StaticMeshActor.h"
@@ -24,8 +30,22 @@
 
 namespace
 {
-const std::filesystem::path GProjectDataDirectory =
-	std::filesystem::path(__FILE__).parent_path().parent_path().parent_path() / "data";
+void ApplyMeshAssetPathToActor(AActor* InActor, const std::string& InSoftPath)
+{
+	if (InActor == nullptr || InSoftPath.empty())
+	{
+		return;
+	}
+
+	for (UActorComponent* Component : InActor->GetComponents())
+	{
+		if (Component != nullptr && Component->IsA(UMeshComponent::StaticClass()))
+		{
+			static_cast<UMeshComponent*>(Component)->SetMeshAssetId(InSoftPath);
+			return;
+		}
+	}
+}
 
 const UClass* ResolveActorClassFromSaveData(const FActorSaveData& InActorData)
 {
@@ -146,11 +166,23 @@ bool ULevel::Load(std::string* OutErrorMessage)
 	}
 	LevelRootObjectId_ = LevelRootObject->GetObjectId();
 
-	if (!MapModelPath_.empty() && std::filesystem::exists(MapModelPath_))
+	if (!MapModelPath_.empty())
 	{
-		const std::string MapAssetId = MapModelPath_.string();
-		MeshImporter Importer;
-		UStaticMesh* MapMesh = Importer.ImportStaticMesh(MapModelPath_, MapAssetId);
+		const std::string MapObjectName = MapModelPath_.stem().string();
+		const std::string MapAssetPath = "Meshes/Maps/" + MapObjectName;
+		const std::string SoftPath = FSoftObjectPath::Build(MapAssetPath, MapObjectName);
+
+		std::string AssetError;
+		UStaticMesh* MapMesh = dynamic_cast<UStaticMesh*>(UAssetManager::Get().GetOrLoad(SoftPath, &AssetError));
+		if (MapMesh == nullptr && std::filesystem::exists(MapModelPath_))
+		{
+			FMeshImportRequest ImportRequest;
+			ImportRequest.SourceFile = MapModelPath_;
+			ImportRequest.AssetPath = MapAssetPath;
+			ImportRequest.ObjectName = MapObjectName;
+			MapMesh = UMeshImportFactory::ImportStaticMeshAndSave(ImportRequest, nullptr, &AssetError);
+		}
+
 		if (MapMesh != nullptr)
 		{
 			FActorSpawnParams SpawnParams;
@@ -169,11 +201,18 @@ bool ULevel::Load(std::string* OutErrorMessage)
 				if (MapComponent != nullptr)
 				{
 					MapComponent->SetStaticMesh(MapMesh);
+					MapComponent->SetMeshAssetId(SoftPath);
 					MapActor->SetRootComponent(MapComponent);
 					MapActor->AddComponent(MapComponent);
 					MapActor->AddReferencedObject(MapComponent);
 					MapComponent->SetOuter(MapActor->GetObjectId());
 					MapActor->AddInner(MapComponent->GetObjectId());
+
+					FActorTransform MapTransform;
+					MapTransform.Scale = {0.03f, 0.03f, 0.03f};
+					MapTransform.Position.Z = 0.02f;
+					MapActor->SetActorTransform(MapTransform);
+					MapActor->ApplyActorTransformToRoot();
 				}
 			}
 		}
@@ -385,8 +424,8 @@ AActor* ULevel::SpawnActorOfClass(const UClass& InActorClass, const FActorSpawnP
 	return NewActor;
 }
 
-bool ULevel::ImportModelFromFile(
-	const std::filesystem::path& InFilePath,
+bool ULevel::SpawnModelFromSoftPath(
+	const std::string& InSoftObjectPath,
 	const FActorTransform& InActorTransform,
 	AActor** OutActor,
 	std::string* OutErrorMessage)
@@ -403,70 +442,61 @@ bool ULevel::ImportModelFromFile(
 	{
 		if (OutErrorMessage != nullptr)
 		{
-			*OutErrorMessage = "Level must be loaded before importing models.";
+			*OutErrorMessage = "Level must be loaded before spawning models.";
 		}
 		return false;
 	}
-	if (InFilePath.empty() || !std::filesystem::exists(InFilePath))
+	if (InSoftObjectPath.empty())
 	{
 		if (OutErrorMessage != nullptr)
 		{
-			*OutErrorMessage = "Model file does not exist: " + InFilePath.string();
+			*OutErrorMessage = "SoftObjectPath is empty.";
 		}
 		return false;
 	}
 
-	const std::filesystem::path CanonicalPath = std::filesystem::weakly_canonical(InFilePath);
-	const std::string AssetId = CanonicalPath.string();
-	const bool bIsSkeletal = MeshImporter::ProbeIsSkeletalModel(CanonicalPath);
-
+	const FSoftObjectPath SoftPath = FSoftObjectPath::Parse(InSoftObjectPath);
 	FActorSpawnParams SpawnParams;
-	SpawnParams.Name = CanonicalPath.stem().string() + "_Imported";
+	SpawnParams.Name = (SoftPath.ObjectName.empty() ? SoftPath.AssetPath : SoftPath.ObjectName) + "_Loaded";
 	SpawnParams.ActorTransform = InActorTransform;
 	SpawnParams.bAddToRoot = false;
 
-	MeshImporter Importer;
-	AActor* ImportedActor = nullptr;
-	if (bIsSkeletal)
-	{
-		USkeletalMesh* SkeletalMesh = Importer.ImportSkeletalMesh(CanonicalPath, AssetId);
-		if (SkeletalMesh == nullptr)
-		{
-			if (OutErrorMessage != nullptr)
-			{
-				*OutErrorMessage = "Assimp failed to import skeletal mesh: " + MeshImporter::GetLastAssimpError();
-			}
-			return false;
-		}
-
-		ImportedActor = ASkeletalMeshActor::Spawn(this, SpawnParams, SkeletalMesh, OutErrorMessage);
-	}
-	else
-	{
-		UStaticMesh* StaticMesh = Importer.ImportStaticMesh(CanonicalPath, AssetId);
-		if (StaticMesh == nullptr)
-		{
-			if (OutErrorMessage != nullptr)
-			{
-				*OutErrorMessage = "Assimp failed to import static mesh: " + MeshImporter::GetLastAssimpError();
-			}
-			return false;
-		}
-
-		ImportedActor = AStaticMeshActor::Spawn(this, SpawnParams, StaticMesh, OutErrorMessage);
-	}
-
-	if (ImportedActor == nullptr)
+	UStreamableRenderAsset* LoadedAsset = UAssetManager::Get().GetOrLoad(InSoftObjectPath, OutErrorMessage);
+	if (LoadedAsset == nullptr)
 	{
 		return false;
 	}
 
-	ImportedActor->SetActorTransform(InActorTransform);
-	ImportedActor->ApplyActorTransformToRoot();
+	AActor* SpawnedActor = nullptr;
+	if (UStaticMesh* StaticMesh = dynamic_cast<UStaticMesh*>(LoadedAsset))
+	{
+		SpawnedActor = AStaticMeshActor::Spawn(this, SpawnParams, StaticMesh, OutErrorMessage);
+	}
+	else if (USkeletalMesh* SkeletalMesh = dynamic_cast<USkeletalMesh*>(LoadedAsset))
+	{
+		SpawnedActor = ASkeletalMeshActor::Spawn(this, SpawnParams, SkeletalMesh, OutErrorMessage);
+	}
+	else
+	{
+		if (OutErrorMessage != nullptr)
+		{
+			*OutErrorMessage = "Unsupported asset type for SoftObjectPath: " + InSoftObjectPath;
+		}
+		return false;
+	}
+
+	if (SpawnedActor == nullptr)
+	{
+		return false;
+	}
+
+	ApplyMeshAssetPathToActor(SpawnedActor, InSoftObjectPath);
+	SpawnedActor->SetActorTransform(InActorTransform);
+	SpawnedActor->ApplyActorTransformToRoot();
 
 	if (OutActor != nullptr)
 	{
-		*OutActor = ImportedActor;
+		*OutActor = SpawnedActor;
 	}
 	return true;
 }
@@ -796,30 +826,15 @@ UStaticMeshComponent* ULevel::ResolveStaticMeshComponentAsset(UActorComponent* I
 		return StaticMeshComponent;
 	}
 
-	const std::string& MeshAssetId = StaticMeshComponent->GetMeshAssetId();
-	if (MeshAssetId.empty())
+	const std::string& MeshReference = StaticMeshComponent->GetMeshAssetId();
+	if (MeshReference.empty())
 	{
 		return StaticMeshComponent;
 	}
 
-	UStaticMesh* StaticMesh = ResourceRegistry::Get().FindAsset<UStaticMesh>(MeshAssetId);
-	const bool bNeedsImport = StaticMesh == nullptr || !StaticMesh->HasResidentGeometryData();
-	if (bNeedsImport)
-	{
-		const std::filesystem::path MeshPath = ResolveAssetImportPath(MeshAssetId);
-		if (std::filesystem::exists(MeshPath))
-		{
-			MeshImporter Importer;
-			StaticMesh = Importer.ImportStaticMesh(MeshPath, MeshAssetId);
-		}
-	}
-
+	UStaticMesh* StaticMesh = dynamic_cast<UStaticMesh*>(UAssetManager::Get().GetOrLoad(MeshReference, OutErrorMessage));
 	if (StaticMesh == nullptr)
 	{
-		if (OutErrorMessage != nullptr)
-		{
-			*OutErrorMessage = "Failed to resolve static mesh asset: " + MeshAssetId;
-		}
 		return StaticMeshComponent;
 	}
 
@@ -840,74 +855,18 @@ USkeletalMeshComponent* ULevel::ResolveSkeletalMeshComponentAsset(UActorComponen
 		return SkeletalMeshComponent;
 	}
 
-	const std::string& MeshAssetId = SkeletalMeshComponent->GetMeshAssetId();
-	if (MeshAssetId.empty())
+	const std::string& MeshReference = SkeletalMeshComponent->GetMeshAssetId();
+	if (MeshReference.empty())
 	{
 		return SkeletalMeshComponent;
 	}
 
-	USkeletalMesh* SkeletalMesh = ResourceRegistry::Get().FindAsset<USkeletalMesh>(MeshAssetId);
-	const bool bNeedsImport = SkeletalMesh == nullptr || !SkeletalMesh->HasResidentGeometryData();
-	if (bNeedsImport)
-	{
-		const std::filesystem::path MeshPath = ResolveAssetImportPath(MeshAssetId);
-		if (std::filesystem::exists(MeshPath))
-		{
-			MeshImporter Importer;
-			SkeletalMesh = Importer.ImportSkeletalMesh(MeshPath, MeshAssetId);
-		}
-	}
-
+	USkeletalMesh* SkeletalMesh = dynamic_cast<USkeletalMesh*>(UAssetManager::Get().GetOrLoad(MeshReference, OutErrorMessage));
 	if (SkeletalMesh == nullptr)
 	{
-		if (OutErrorMessage != nullptr)
-		{
-			*OutErrorMessage = "Failed to resolve skeletal mesh asset: " + MeshAssetId;
-		}
 		return SkeletalMeshComponent;
 	}
 
 	SkeletalMeshComponent->SetSkeletalMesh(SkeletalMesh);
 	return SkeletalMeshComponent;
-}
-
-std::filesystem::path ULevel::ResolveAssetImportPath(const std::string& InAssetId) const
-{
-	if (InAssetId.empty())
-	{
-		return std::filesystem::path();
-	}
-
-	const std::filesystem::path AssetPath(InAssetId);
-	if (AssetPath.is_absolute())
-	{
-		return AssetPath;
-	}
-
-	const std::filesystem::path ProjectRootDirectory = GProjectDataDirectory.parent_path();
-	if (!GProjectDataDirectory.empty())
-	{
-		const std::filesystem::path DataRelativeCandidate = GProjectDataDirectory / AssetPath;
-		if (std::filesystem::exists(DataRelativeCandidate))
-		{
-			return DataRelativeCandidate;
-		}
-	}
-
-	if (!ProjectRootDirectory.empty())
-	{
-		const std::filesystem::path ProjectRelativeCandidate = ProjectRootDirectory / AssetPath;
-		if (std::filesystem::exists(ProjectRelativeCandidate))
-		{
-			return ProjectRelativeCandidate;
-		}
-	}
-
-	const std::filesystem::path CurrentWorkingDirectoryRelative = std::filesystem::current_path() / AssetPath;
-	if (std::filesystem::exists(CurrentWorkingDirectoryRelative))
-	{
-		return CurrentWorkingDirectoryRelative;
-	}
-
-	return AssetPath;
 }

@@ -188,7 +188,121 @@ void UStaticMesh::Serialize(nlohmann::json* OutObjectJson) const
 		return;
 	}
 
-	(*OutObjectJson)["vertex_count"] = Vertices_.size();
-	(*OutObjectJson)["index_count"] = Indices_.size();
-	(*OutObjectJson)["section_count"] = Sections_.size();
+	nlohmann::json VerticesJson = nlohmann::json::array();
+	for (const FVertex& Vertex : Vertices_)
+	{
+		VerticesJson.push_back(nlohmann::json{
+			{"position", nlohmann::json{{"x", Vertex.Position.X}, {"y", Vertex.Position.Y}, {"z", Vertex.Position.Z}}},
+			{"normal", nlohmann::json{{"x", Vertex.Normal.X}, {"y", Vertex.Normal.Y}, {"z", Vertex.Normal.Z}}},
+			{"tex_coord", nlohmann::json{{"x", Vertex.TexCoord.X}, {"y", Vertex.TexCoord.Y}}},
+			{"tangent", nlohmann::json{{"x", Vertex.TangentVec.X}, {"y", Vertex.TangentVec.Y}, {"z", Vertex.TangentVec.Z}, {"w", Vertex.TangentVec.W}}}
+		});
+	}
+
+	nlohmann::json SectionsJson = nlohmann::json::array();
+	for (const FStaticMeshSection& Section : Sections_)
+	{
+		SectionsJson.push_back(nlohmann::json{
+			{"material_index", Section.MaterialIndex},
+			{"first_index", Section.FirstIndex},
+			{"index_count", Section.IndexCount},
+			{"bounds", nlohmann::json{
+				{"origin", nlohmann::json{{"x", Section.SectionBounds.Origin.X}, {"y", Section.SectionBounds.Origin.Y}, {"z", Section.SectionBounds.Origin.Z}}},
+				{"extent", nlohmann::json{{"x", Section.SectionBounds.Extent.X}, {"y", Section.SectionBounds.Extent.Y}, {"z", Section.SectionBounds.Extent.Z}}},
+				{"sphere_radius", Section.SectionBounds.SphereRadius}
+			}}
+		});
+	}
+
+	(*OutObjectJson)["class"] = "UStaticMesh";
+	(*OutObjectJson)["vertices"] = std::move(VerticesJson);
+	(*OutObjectJson)["indices"] = Indices_;
+	(*OutObjectJson)["sections"] = std::move(SectionsJson);
+	(*OutObjectJson)["total_bounds"] = nlohmann::json{
+		{"origin", nlohmann::json{{"x", TotalBounds_.Origin.X}, {"y", TotalBounds_.Origin.Y}, {"z", TotalBounds_.Origin.Z}}},
+		{"extent", nlohmann::json{{"x", TotalBounds_.Extent.X}, {"y", TotalBounds_.Extent.Y}, {"z", TotalBounds_.Extent.Z}}},
+		{"sphere_radius", TotalBounds_.SphereRadius}
+	};
+}
+
+UStaticMesh* UStaticMesh::Deserialize(const nlohmann::json& InObjectJson, std::string* OutErrorMessage)
+{
+	if (!InObjectJson.contains("object_name") && !InObjectJson.contains("asset_path"))
+	{
+		if (OutErrorMessage != nullptr)
+		{
+			*OutErrorMessage = "StaticMesh object json missing identity fields";
+		}
+		return nullptr;
+	}
+
+	std::string ObjectName = InObjectJson.value("object_name", std::string("StaticMesh"));
+	UStaticMesh* StaticMesh = new UStaticMesh(0, ObjectName, nullptr);
+	if (InObjectJson.contains("asset_path"))
+	{
+		StaticMesh->SetAssetPath(InObjectJson.at("asset_path").get<std::string>());
+	}
+
+	if (InObjectJson.contains("vertices"))
+	{
+		std::vector<FVertex> Vertices;
+		for (const nlohmann::json& VertexJson : InObjectJson.at("vertices"))
+		{
+			FVertex Vertex;
+			const auto& Position = VertexJson.at("position");
+			Vertex.Position.X = Position.at("x").get<float>();
+			Vertex.Position.Y = Position.at("y").get<float>();
+			Vertex.Position.Z = Position.at("z").get<float>();
+			const auto& Normal = VertexJson.at("normal");
+			Vertex.Normal.X = Normal.at("x").get<float>();
+			Vertex.Normal.Y = Normal.at("y").get<float>();
+			Vertex.Normal.Z = Normal.at("z").get<float>();
+			const auto& TexCoord = VertexJson.at("tex_coord");
+			Vertex.TexCoord.X = TexCoord.at("x").get<float>();
+			Vertex.TexCoord.Y = TexCoord.at("y").get<float>();
+			const auto& Tangent = VertexJson.at("tangent");
+			Vertex.TangentVec.X = Tangent.at("x").get<float>();
+			Vertex.TangentVec.Y = Tangent.at("y").get<float>();
+			Vertex.TangentVec.Z = Tangent.at("z").get<float>();
+			Vertex.TangentVec.W = Tangent.at("w").get<float>();
+			Vertices.push_back(Vertex);
+		}
+		StaticMesh->SetVertices(Vertices);
+	}
+
+	if (InObjectJson.contains("indices"))
+	{
+		StaticMesh->SetIndices(InObjectJson.at("indices").get<std::vector<uint32_t>>());
+	}
+
+	if (InObjectJson.contains("sections"))
+	{
+		for (const nlohmann::json& SectionJson : InObjectJson.at("sections"))
+		{
+			FStaticMeshSection Section;
+			Section.MaterialIndex = SectionJson.at("material_index").get<uint32_t>();
+			Section.FirstIndex = SectionJson.at("first_index").get<uint32_t>();
+			Section.IndexCount = SectionJson.at("index_count").get<uint32_t>();
+			if (SectionJson.contains("bounds"))
+			{
+				const auto& BoundsJson = SectionJson.at("bounds");
+				const auto& Origin = BoundsJson.at("origin");
+				Section.SectionBounds.Origin.X = Origin.at("x").get<float>();
+				Section.SectionBounds.Origin.Y = Origin.at("y").get<float>();
+				Section.SectionBounds.Origin.Z = Origin.at("z").get<float>();
+				const auto& Extent = BoundsJson.at("extent");
+				Section.SectionBounds.Extent.X = Extent.at("x").get<float>();
+				Section.SectionBounds.Extent.Y = Extent.at("y").get<float>();
+				Section.SectionBounds.Extent.Z = Extent.at("z").get<float>();
+				Section.SectionBounds.SphereRadius = BoundsJson.at("sphere_radius").get<float>();
+			}
+			StaticMesh->AddSection(Section);
+		}
+	}
+	else
+	{
+		StaticMesh->RebuildSectionBounds();
+	}
+
+	return StaticMesh;
 }

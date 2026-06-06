@@ -1,9 +1,11 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
-#include <array>
+
+#include <nlohmann/json_fwd.hpp>
 
 #include "core/UClass.h"
 #include "render/asset/StreamableRenderAsset.h"
@@ -48,6 +50,9 @@ public:
 
 	virtual bool HasResidentGeometryData() const override;
 	virtual FBounds GetBounds() const override;
+
+	virtual void Serialize(nlohmann::json* OutObjectJson) const override;
+	static USkinnedAsset* DeserializeBase(const nlohmann::json& InObjectJson, std::string* OutErrorMessage);
 
 private:
 	void RebuildBoundsFromSkinVertices();

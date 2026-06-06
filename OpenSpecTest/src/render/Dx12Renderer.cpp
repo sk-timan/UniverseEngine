@@ -1,9 +1,5 @@
 #include "render/Dx12Renderer.h"
 
-#include <assimp/cimport.h>
-#include <assimp/postprocess.h>
-#include <assimp/scene.h>
-
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -158,16 +154,7 @@ bool Dx12Renderer::Initialize(HWND InHwnd, UINT InWidth, UINT InHeight)
 
 void Dx12Renderer::SetMapModelPath(const std::filesystem::path& InModelPath)
 {
-	if (m_map_model_path_ == InModelPath)
-	{
-		return;
-	}
-
-	m_map_model_path_ = InModelPath;
-	if (m_device_ != nullptr)
-	{
-		(void)CreateMeshBuffers();
-	}
+	(void)InModelPath;
 }
 
 DirectX::XMFLOAT4 Dx12Renderer::ResolveMeshColor(const std::vector<UMeshComponent::FMaterialOverride>& InMaterialOverrides) const
@@ -1534,83 +1521,6 @@ bool Dx12Renderer::CreateMeshBuffers()
 		return false;
 	}
 
-	RetireUploadBuffer(m_map_model_mesh_.vertex_buffer);
-	m_map_model_mesh_.vertex_buffer_view = {};
-	m_map_model_mesh_.vertex_count = 0;
-	if (!m_map_model_path_.empty() && std::filesystem::exists(m_map_model_path_))
-	{
-		std::vector<Vertex> model_triangles;
-
-		const aiScene* scene = aiImportFile(m_map_model_path_.string().c_str(),
-											aiProcess_Triangulate | aiProcess_JoinIdenticalVertices |
-												aiProcess_PreTransformVertices |
-												aiProcess_GenSmoothNormals |
-												aiProcess_ImproveCacheLocality);
-		if (scene != nullptr)
-		{
-			model_triangles.reserve(4096);
-			for (unsigned int mesh_index = 0; mesh_index < scene->mNumMeshes; ++mesh_index)
-			{
-				const aiMesh* mesh = scene->mMeshes[mesh_index];
-				if (mesh == nullptr || mesh->mVertices == nullptr)
-				{
-					continue;
-				}
-
-				for (unsigned int face_index = 0; face_index < mesh->mNumFaces; ++face_index)
-				{
-					const aiFace& face = mesh->mFaces[face_index];
-					if (face.mNumIndices < 3)
-					{
-						continue;
-					}
-
-					for (unsigned int idx = 0; idx < 3; ++idx)
-					{
-						const unsigned int vertex_index = face.mIndices[idx];
-						if (vertex_index >= mesh->mNumVertices)
-						{
-							continue;
-						}
-
-						const aiVector3D UePosition =
-							FAssimpCoordinate::ConvertPositionToUe(mesh->mVertices[vertex_index]);
-						aiVector3D UeNormal = (mesh->HasNormals() && mesh->mNormals != nullptr)
-												  ? FAssimpCoordinate::ConvertDirectionToUe(mesh->mNormals[vertex_index])
-												  : aiVector3D(0.0f, 0.0f, 1.0f);
-						if (UeNormal.SquareLength() > 0.0f)
-						{
-							UeNormal.Normalize();
-						}
-						constexpr float MapModelScale = 0.03f;
-						constexpr float MapModelGroundOffset = 0.02f;
-						model_triangles.push_back(
-							{{UePosition.x * MapModelScale,
-							  UePosition.y * MapModelScale,
-							  (UePosition.z * MapModelScale) + MapModelGroundOffset},
-							 {UeNormal.x, UeNormal.y, UeNormal.z},
-							 {0.88f, 0.82f, 0.72f, 1.0f}});
-					}
-				}
-			}
-			aiReleaseImport(scene);
-		}
-
-		if (!model_triangles.empty())
-		{
-			const UINT64 MapBufferSize = static_cast<UINT64>(model_triangles.size() * sizeof(Vertex));
-			if (!CreateUploadBuffer(model_triangles.data(), MapBufferSize, m_map_model_mesh_.vertex_buffer.ReleaseAndGetAddressOf()))
-			{
-				return false;
-			}
-
-			m_map_model_mesh_.vertex_buffer_view.BufferLocation = m_map_model_mesh_.vertex_buffer->GetGPUVirtualAddress();
-			m_map_model_mesh_.vertex_buffer_view.SizeInBytes = static_cast<UINT>(MapBufferSize);
-			m_map_model_mesh_.vertex_buffer_view.StrideInBytes = sizeof(Vertex);
-			m_map_model_mesh_.vertex_count = static_cast<UINT>(model_triangles.size());
-		}
-	}
-
 	return true;
 }
 
@@ -1881,16 +1791,6 @@ void Dx12Renderer::Render(const CameraState& InCamera)
 			++DrawSlotIndex;
 		}
 		NextDrawSlotIndex = DrawSlotIndex;
-	}
-
-	if (m_map_model_mesh_.vertex_count > 0)
-	{
-		m_command_list_->SetPipelineState(m_triangle_pipeline_state_.Get());
-		m_command_list_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-		m_command_list_->SetGraphicsRootDescriptorTable(0, SceneCbvGpuHandle);
-		m_command_list_->SetGraphicsRootDescriptorTable(1, DefaultDrawCbvGpuHandle);
-		m_command_list_->IASetVertexBuffers(0, 1, &m_map_model_mesh_.vertex_buffer_view);
-		m_command_list_->DrawInstanced(m_map_model_mesh_.vertex_count, 1, 0, 0);
 	}
 
 	if (m_debug_line_mesh_.vertex_count > 0 || m_debug_axis_mesh_.vertex_count > 0)

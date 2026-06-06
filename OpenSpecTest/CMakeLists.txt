@@ -457,4 +457,35 @@ set_property(TARGET OpenSpecTest_LevelSaveLoadTests PROPERTY CXX_STANDARD 20)
 
 add_test(NAME OpenSpecTest_LevelSaveLoadTests COMMAND OpenSpecTest_LevelSaveLoadTests)
 
+add_executable(OpenSpecTest_AssetSerializerTests
+  "src/tests/AssetSerializerTests.cpp"
+  "src/core/UClass.cpp"
+  "src/core/UObject.cpp"
+  "src/asset/AssetPackageHeader.cpp"
+  "src/asset/AssetSerializer.cpp"
+  "src/asset/ProjectPaths.cpp"
+  "src/render/asset/StreamableRenderAsset.cpp"
+  "src/render/asset/StaticMesh.cpp"
+  "src/render/asset/SkinnedAsset.cpp"
+  "src/render/asset/SkeletalMesh.cpp"
+  "src/math/FVector2D.cpp"
+  "src/math/FVector3.cpp"
+  "src/math/FVector4.cpp"
+  "src/math/FRotator3.cpp"
+  "src/math/FTransform.cpp"
+)
+
+target_include_directories(OpenSpecTest_AssetSerializerTests PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/src"
+  "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty"
+)
+
+target_link_libraries(OpenSpecTest_AssetSerializerTests PRIVATE
+  nlohmann_json::nlohmann_json
+)
+
+set_property(TARGET OpenSpecTest_AssetSerializerTests PROPERTY CXX_STANDARD 20)
+
+add_test(NAME OpenSpecTest_AssetSerializerTests COMMAND OpenSpecTest_AssetSerializerTests)
+
 # TODO: 如有需要，请添加测试并安装目标。

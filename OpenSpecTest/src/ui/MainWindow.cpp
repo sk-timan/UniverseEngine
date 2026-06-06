@@ -35,6 +35,7 @@
 #include "ui/EditorPerformanceDialog.h"
 #include "ui/EditorPreferencesDialog.h"
 #include "ui/DetailPanelWidget.h"
+#include "asset/ProjectPaths.h"
 #include "ui/ImportModelTransformDialog.h"
 #include "ui/WorldContentPanelWidget.h"
 #include "data/GameplayConfig.h"
@@ -683,9 +684,13 @@ void MainWindow::BuildMenuBar()
 
 	FileMenu->addSeparator();
 
-	m_import_model_action_ = new QAction(tr("导入模型(&I)..."), FileMenu);
-	connect(m_import_model_action_, &QAction::triggered, this, &MainWindow::OnImportModelClicked);
-	FileMenu->addAction(m_import_model_action_);
+	m_import_asset_action_ = new QAction(tr("导入(&I)..."), FileMenu);
+	connect(m_import_asset_action_, &QAction::triggered, this, &MainWindow::OnImportAssetClicked);
+	FileMenu->addAction(m_import_asset_action_);
+
+	m_load_model_action_ = new QAction(tr("加载模型(&L)..."), FileMenu);
+	connect(m_load_model_action_, &QAction::triggered, this, &MainWindow::OnLoadModelClicked);
+	FileMenu->addAction(m_load_model_action_);
 
 	FileMenu->addSeparator();
 
@@ -969,7 +974,7 @@ void MainWindow::OnSaveAsMapClicked()
 	SetEditorStatus(tr("地图已另存为: %1").arg(QString::fromStdString(Path.filename().stem().string())), false);
 }
 
-void MainWindow::OnImportModelClicked()
+void MainWindow::OnImportAssetClicked()
 {
 	if (m_game_app_ == nullptr)
 	{
@@ -979,7 +984,7 @@ void MainWindow::OnImportModelClicked()
 	const QString InitialDir = QString::fromStdString(m_game_app_->GetMapsDirectory().parent_path().string());
 	const QString FilePath = QFileDialog::getOpenFileName(
 		this,
-		tr("导入模型"),
+		tr("导入资产"),
 		InitialDir,
 		tr("3D模型 (*.fbx *.obj *.gltf *.glb *.dae *.3ds *.blend);;所有文件 (*.*)"));
 
@@ -989,29 +994,77 @@ void MainWindow::OnImportModelClicked()
 	}
 
 	const QString ModelName = QFileInfo(FilePath).completeBaseName();
-	ImportModelTransformDialog TransformDialog(ModelName, this);
-	if (TransformDialog.exec() != QDialog::Accepted)
+	ImportModelTransformDialog ImportDialog(ModelName, EImportModelDialogMode::ImportAsset, this);
+	if (ImportDialog.exec() != QDialog::Accepted)
 	{
 		return;
 	}
 
-	const FActorTransform ActorTransform = TransformDialog.GetActorTransform();
-
+	const std::string ContentAssetPath = ImportDialog.GetContentAssetPath().toStdString();
+	std::string SoftObjectPath;
 	std::string ErrorMessage;
-	if (!m_game_app_->ImportModelToActiveLevel(
+	if (!m_game_app_->ImportAssetFromSourceFile(
+			std::filesystem::path(FilePath.toStdString()),
+			ContentAssetPath,
+			&SoftObjectPath,
+			&ErrorMessage))
+	{
+		QMessageBox::warning(
+			this,
+			tr("导入失败"),
+			tr("无法导入资产: %1").arg(QString::fromStdString(ErrorMessage)));
+		return;
+	}
+
+	SetEditorStatus(
+		tr("已导入资产: %1 → %2")
+			.arg(ModelName)
+			.arg(QString::fromStdString(SoftObjectPath)),
+		false);
+}
+
+void MainWindow::OnLoadModelClicked()
+{
+	if (m_game_app_ == nullptr)
+	{
+		return;
+	}
+
+	const QString InitialDir = QString::fromStdString(GProjectContentDirectory.string());
+	const QString FilePath = QFileDialog::getOpenFileName(
+		this,
+		tr("加载模型"),
+		InitialDir,
+		tr("uasset 资产 (*.uasset);;所有文件 (*.*)"));
+
+	if (FilePath.isEmpty())
+	{
+		return;
+	}
+
+	const QString ModelName = QFileInfo(FilePath).completeBaseName();
+	ImportModelTransformDialog LoadDialog(ModelName, EImportModelDialogMode::LoadModel, this);
+	if (LoadDialog.exec() != QDialog::Accepted)
+	{
+		return;
+	}
+
+	const FActorTransform ActorTransform = LoadDialog.GetActorTransform();
+	std::string ErrorMessage;
+	if (!m_game_app_->LoadModelToActiveLevel(
 			std::filesystem::path(FilePath.toStdString()),
 			ActorTransform,
 			&ErrorMessage))
 	{
 		QMessageBox::warning(
 			this,
-			tr("导入模型失败"),
-			tr("无法导入模型: %1").arg(QString::fromStdString(ErrorMessage)));
+			tr("加载模型失败"),
+			tr("无法加载模型: %1").arg(QString::fromStdString(ErrorMessage)));
 		return;
 	}
 
 	SetEditorStatus(
-		tr("已导入模型: %1（位置 %2,%3,%4）")
+		tr("已加载模型: %1（位置 %2,%3,%4）")
 			.arg(ModelName)
 			.arg(ActorTransform.Position.X, 0, 'f', 2)
 			.arg(ActorTransform.Position.Y, 0, 'f', 2)

@@ -110,7 +110,7 @@ UActorComponent* ComponentSerializer::DeserializeComponent(
 	if (Component->IsA(UMeshComponent::StaticClass()))
 	{
 		UMeshComponent* MeshComponent = static_cast<UMeshComponent*>(Component);
-		MeshComponent->SetMeshAssetId(InData.MeshAssetId);
+		MeshComponent->SetMeshAssetId(InData.MeshAssetPath.empty() ? InData.MeshAssetId : InData.MeshAssetPath);
 		MeshComponent->SetForcedLODLevel(InData.ForcedLODLevel);
 		MeshComponent->SetVisibility(InData.bVisible);
 		for (const FMaterialOverrideSaveData& Override : InData.MaterialOverrides)
@@ -147,6 +147,7 @@ void ComponentSerializer::SerializeMeshComponent(const UMeshComponent* InCompone
 	}
 
 	OutData->MeshAssetId = InComponent->GetMeshAssetId();
+	OutData->MeshAssetPath = InComponent->GetMeshAssetId();
 	for (const auto& Override : InComponent->GetMaterialOverrides())
 	{
 		FMaterialOverrideSaveData OverrideData;
