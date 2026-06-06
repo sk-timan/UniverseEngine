@@ -3,6 +3,7 @@
 # --- 仓库根目录 ---
 /*
 !/.gitignore
+!/.cursor/
 !/docs/
 !/openspec/
 !/OpenSpecTest/
@@ -11,6 +12,7 @@
 !/CMakeSettings.json
 
 # 允许白名单目录下的全部内容
+!/.cursor/**
 !/docs/**
 !/openspec/**
 
