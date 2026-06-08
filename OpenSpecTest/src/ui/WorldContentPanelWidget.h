@@ -1,6 +1,6 @@
 #pragma once
 
-#include <QWidget>
+#include "ui/ScrollablePanelWidget.h"
 
 class QLineEdit;
 class QLabel;
@@ -10,7 +10,7 @@ class QTreeWidgetItem;
 class GameApp;
 class AActor;
 
-class WorldContentPanelWidget final : public QWidget
+class WorldContentPanelWidget final : public ScrollablePanelWidget
 {
 	Q_OBJECT
 

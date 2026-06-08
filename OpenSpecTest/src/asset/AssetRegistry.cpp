@@ -75,8 +75,9 @@ void FAssetRegistry::ScanContentDirectory()
 		{
 			continue;
 		}
-		RegisterScannedUAsset(Entry.path());
+		RegisterFromDisk(Entry.path());
 	}
+	BumpRevision();
 }
 
 void FAssetRegistry::RegisterScannedUAsset(const std::filesystem::path& InUAssetPath)
@@ -101,6 +102,7 @@ void FAssetRegistry::RegisterScannedUAsset(const std::filesystem::path& InUAsset
 	}
 
 	UpsertRegistryEntry(std::move(Entry), &Entries_);
+	BumpRevision();
 }
 
 void FAssetRegistry::RegisterFromHeader(
@@ -123,6 +125,7 @@ void FAssetRegistry::RegisterFromHeader(
 	}
 
 	UpsertRegistryEntry(std::move(Entry), &Entries_);
+	BumpRevision();
 }
 
 void FAssetRegistry::RegisterFromDisk(const std::filesystem::path& InUAssetPath)
@@ -179,4 +182,14 @@ std::vector<FAssetRegistryEntry> FAssetRegistry::ListAssets(const std::string& I
 		}
 	}
 	return Filtered;
+}
+
+uint64_t FAssetRegistry::GetRevision() const
+{
+	return Revision_;
+}
+
+void FAssetRegistry::BumpRevision()
+{
+	++Revision_;
 }

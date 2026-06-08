@@ -16,14 +16,18 @@
 #include <QTimer>
 #include <QWidget>
 
+#include <functional>
+
 #include "data/GameplayConfig.h"
 
 class QCloseEvent;
 class QFocusEvent;
 class QMouseEvent;
+class QWheelEvent;
 class QResizeEvent;
 class QShowEvent;
 
+class AssetBrowserPanelWidget;
 class CameraSpeedControlWidget;
 class DetailPanelWidget;
 class GameApp;
@@ -71,6 +75,7 @@ protected:
 
 private:
 	void SetupCameraSpeedControl();
+	void RaiseOverlayWidgets();
 
 	GameApp* m_game_app_ = nullptr;
 	QPointer<RenderViewportWidget> m_viewport_;
@@ -102,7 +107,10 @@ private:
 	void BuildDisplayPanel();
 	void BuildWorldContentPanel();
 	void BuildDetailPanel();
+	void BuildAssetBrowserPanel();
+	void ConfigureDockLayout();
 	void RefreshScenePanels();
+	void RefreshAssetBrowser();
 	void UpdateRuntimeDisplay();
 	void BuildMenuBar();
 	void LoadGameplayConfigToEditor();
@@ -138,6 +146,7 @@ private:
 	QPointer<QLabel> m_runtime_hint_label_;
 	QPointer<WorldContentPanelWidget> m_world_content_panel_;
 	QPointer<DetailPanelWidget> m_detail_panel_;
+	QPointer<AssetBrowserPanelWidget> m_asset_browser_panel_;
 	QPointer<QLineEdit> m_map_id_edit_;
 	QPointer<QDoubleSpinBox> m_spawn_x_spin_;
 	QPointer<QDoubleSpinBox> m_spawn_y_spin_;

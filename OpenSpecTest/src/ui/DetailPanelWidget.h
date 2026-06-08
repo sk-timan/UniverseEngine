@@ -1,7 +1,6 @@
 #pragma once
 
-#include <QResizeEvent>
-#include <QWidget>
+#include "ui/ScrollablePanelWidget.h"
 
 #include "world/ActorTransform.h"
 
@@ -13,7 +12,7 @@ class QLineEdit;
 
 class GameApp;
 
-class DetailPanelWidget final : public QWidget
+class DetailPanelWidget final : public ScrollablePanelWidget
 {
 	Q_OBJECT
 

@@ -21,6 +21,10 @@ QString BuildApplicationStyleSheet()
 		"QWidget#RenderViewportWidget {"
 		"  background-color: #101214;"
 		"}"
+		"QWidget#ViewportHostWidget {"
+		"  background: transparent;"
+		"  background-color: transparent;"
+		"}"
 
 		/* Main window / docks / dialogs */
 		"QMainWindow {"
@@ -175,6 +179,21 @@ QString BuildApplicationStyleSheet()
 		"QTreeWidget::item:selected, QTreeView::item:selected {"
 		"  background-color: #2c5d87;"
 		"  color: #ffffff;"
+		"}"
+
+		/* Asset browser */
+		"QListView#AssetBrowserGrid {"
+		"  background-color: #252526;"
+		"  border: 1px solid #3f3f46;"
+		"}"
+		"QLineEdit#AssetBrowserSearchEdit {"
+		"  background-color: #1a1a1a;"
+		"  border: 1px solid #3f3f46;"
+		"  padding: 4px 6px;"
+		"}"
+		"QScrollArea#EditorScrollArea {"
+		"  background-color: #252526;"
+		"  border: none;"
 		"}"
 		"QHeaderView::section {"
 		"  background-color: #2d2d30;"

@@ -15,7 +15,7 @@
 #include "world/Actor.h"
 
 DetailPanelWidget::DetailPanelWidget(GameApp* InGameApp, QWidget* InParent)
-	: QWidget(InParent)
+	: ScrollablePanelWidget(InParent)
 	, m_game_app_(InGameApp)
 {
 	BuildUi();
@@ -24,23 +24,22 @@ DetailPanelWidget::DetailPanelWidget(GameApp* InGameApp, QWidget* InParent)
 
 void DetailPanelWidget::BuildUi()
 {
-	auto* RootLayout = new QVBoxLayout(this);
-	RootLayout->setContentsMargins(6, 6, 6, 6);
-	RootLayout->setSpacing(6);
+	QWidget* Content = GetContentWidget();
+	QVBoxLayout* ContentLayout = GetContentLayout();
 
-	m_header_label_ = new QLabel(tr("未选中 Actor"), this);
+	m_header_label_ = new QLabel(tr("未选中 Actor"), Content);
 	m_header_label_->setObjectName("PanelHeaderLabel");
 	m_header_label_->setWordWrap(true);
 	m_header_label_->setAlignment(Qt::AlignLeft | Qt::AlignTop);
-	m_header_label_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Minimum);
-	RootLayout->addWidget(m_header_label_);
+	m_header_label_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
+	ContentLayout->addWidget(m_header_label_);
 
-	m_search_edit_ = new QLineEdit(this);
+	m_search_edit_ = new QLineEdit(Content);
 	m_search_edit_->setPlaceholderText(tr("搜索属性..."));
 	m_search_edit_->setClearButtonEnabled(true);
-	RootLayout->addWidget(m_search_edit_);
+	ContentLayout->addWidget(m_search_edit_);
 
-	m_transform_group_ = new QGroupBox(tr("Transform"), this);
+	m_transform_group_ = new QGroupBox(tr("Transform"), Content);
 	auto* TransformLayout = new QFormLayout(m_transform_group_);
 
 	m_position_x_spin_ = CreateSpinBox(-100000.0, 100000.0, 0.0);
@@ -64,21 +63,20 @@ void DetailPanelWidget::BuildUi()
 	TransformLayout->addRow(tr("Scale Y"), m_scale_y_spin_);
 	TransformLayout->addRow(tr("Scale Z"), m_scale_z_spin_);
 
-	RootLayout->addWidget(m_transform_group_);
+	ContentLayout->addWidget(m_transform_group_);
 
-	m_aabb_debug_checkbox_ = new QCheckBox(tr("显示 Mesh Actor AABB 线框"), this);
+	m_aabb_debug_checkbox_ = new QCheckBox(tr("显示 Mesh Actor AABB 线框"), Content);
 	m_aabb_debug_checkbox_->setEnabled(false);
-	RootLayout->addWidget(m_aabb_debug_checkbox_);
+	ContentLayout->addWidget(m_aabb_debug_checkbox_);
 
-	m_obb_debug_checkbox_ = new QCheckBox(tr("显示 Mesh Actor OBB 线框"), this);
+	m_obb_debug_checkbox_ = new QCheckBox(tr("显示 Mesh Actor OBB 线框"), Content);
 	m_obb_debug_checkbox_->setEnabled(false);
-	RootLayout->addWidget(m_obb_debug_checkbox_);
+	ContentLayout->addWidget(m_obb_debug_checkbox_);
 
-	m_section_bounds_debug_checkbox_ = new QCheckBox(tr("显示 Mesh Actor SectionBounds 线框"), this);
+	m_section_bounds_debug_checkbox_ =
+		new QCheckBox(tr("显示 Mesh Actor SectionBounds 线框"), Content);
 	m_section_bounds_debug_checkbox_->setEnabled(false);
-	RootLayout->addWidget(m_section_bounds_debug_checkbox_);
-
-	RootLayout->addStretch(1);
+	ContentLayout->addWidget(m_section_bounds_debug_checkbox_);
 
 	const auto ConnectSpin = [this](DraggableDoubleSpinBox* InSpin)
 	{
@@ -107,11 +105,13 @@ void DetailPanelWidget::BuildUi()
 		&QCheckBox::toggled,
 		this,
 		&DetailPanelWidget::OnSectionBoundsDebugToggled);
+
+	RefreshScrollContentGeometry();
 }
 
 void DetailPanelWidget::resizeEvent(QResizeEvent* InEvent)
 {
-	QWidget::resizeEvent(InEvent);
+	ScrollablePanelWidget::resizeEvent(InEvent);
 	UpdateHeaderLabelLayoutWidth();
 }
 
@@ -122,10 +122,11 @@ void DetailPanelWidget::UpdateHeaderLabelLayoutWidth()
 		return;
 	}
 
-	const QMargins Margins = (layout() != nullptr)
-		? layout()->contentsMargins()
+	const QMargins Margins = (GetContentLayout() != nullptr)
+		? GetContentLayout()->contentsMargins()
 		: QMargins{};
-	const int AvailableWidth = std::max(0, width() - Margins.left() - Margins.right());
+	const int ViewportWidth = GetContentViewportWidth();
+	const int AvailableWidth = std::max(0, ViewportWidth - Margins.left() - Margins.right());
 	if (AvailableWidth <= 0)
 	{
 		return;
@@ -137,7 +138,7 @@ void DetailPanelWidget::UpdateHeaderLabelLayoutWidth()
 
 DraggableDoubleSpinBox* DetailPanelWidget::CreateSpinBox(double InMin, double InMax, double InValue, int InDecimals)
 {
-	auto* SpinBox = new DraggableDoubleSpinBox(this);
+	auto* SpinBox = new DraggableDoubleSpinBox(m_transform_group_);
 	SpinBox->setRange(InMin, InMax);
 	SpinBox->setDecimals(InDecimals);
 	SpinBox->setValue(InValue);
@@ -247,6 +248,7 @@ void DetailPanelWidget::RefreshFromSelection()
 			.arg(QString::fromStdString(SelectedActor->GetClass().GetTypeName()));
 	m_header_label_->setText(HeaderText);
 	UpdateHeaderLabelLayoutWidth();
+	RefreshScrollContentGeometry();
 	PopulateFromActorTransform(SelectedActor->GetActorTransform());
 }
 

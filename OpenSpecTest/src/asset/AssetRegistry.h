@@ -30,11 +30,14 @@ public:
 	std::optional<FAssetRegistryEntry> FindBySoftPath(const std::string& InSoftPath) const;
 	std::optional<FAssetRegistryEntry> FindByAssetPath(const std::string& InAssetPath) const;
 	std::vector<FAssetRegistryEntry> ListAssets(const std::string& InTypeFilter = {}) const;
+	uint64_t GetRevision() const;
 
 private:
 	FAssetRegistry() = default;
 
 	void RegisterScannedUAsset(const std::filesystem::path& InUAssetPath);
+	void BumpRevision();
 
 	std::vector<FAssetRegistryEntry> Entries_;
+	uint64_t Revision_ = 0;
 };

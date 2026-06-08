@@ -16,12 +16,14 @@
 #include <QInputDialog>
 #include <QLineEdit>
 #include <QMessageBox>
-#include <QMessageBox>
 #include <QMouseEvent>
+#include <QWheelEvent>
+#include <optional>
 #include <QPushButton>
 #include <QGridLayout>
 #include <QResizeEvent>
 #include <QShowEvent>
+#include <QSizePolicy>
 #include <QStyle>
 #include <QTimer>
 #include <QSpinBox>
@@ -29,6 +31,8 @@
 #include <QWidget>
 
 #include <filesystem>
+#include <functional>
+#include <cstring>
 
 #include "app/GameApp.h"
 #include "ui/CameraSpeedControlWidget.h"
@@ -36,8 +40,12 @@
 #include "ui/EditorPreferencesDialog.h"
 #include "ui/DetailPanelWidget.h"
 #include "asset/ProjectPaths.h"
+#include "asset/SoftObjectPath.h"
+#include "ui/AssetBrowserPanelWidget.h"
 #include "ui/ImportModelTransformDialog.h"
+#include "ui/ScrollablePanelWidget.h"
 #include "ui/WorldContentPanelWidget.h"
+#include "world/ActorTransform.h"
 #include "data/GameplayConfig.h"
 
 namespace
@@ -49,6 +57,7 @@ QPoint MapViewportMouseToPhysical(const QWidget* InWidget, const QPointF& InPosi
 		static_cast<int>(InPosition.x() * DevicePixelRatio),
 		static_cast<int>(InPosition.y() * DevicePixelRatio));
 }
+
 } // namespace
 
 RenderViewportWidget::RenderViewportWidget(GameApp* InGameApp, QWidget* InParent)
@@ -58,8 +67,11 @@ RenderViewportWidget::RenderViewportWidget(GameApp* InGameApp, QWidget* InParent
 	setObjectName("RenderViewportWidget");
 	setFocusPolicy(Qt::StrongFocus);
 	setMouseTracking(true);
+	setAcceptDrops(false);
 	setAttribute(Qt::WA_NativeWindow, true);
 	setAttribute(Qt::WA_DontCreateNativeAncestors, true);
+	setAttribute(Qt::WA_NoSystemBackground, true);
+	setAutoFillBackground(false);
 }
 
 ViewportHostWidget::ViewportHostWidget(GameApp* InGameApp, QWidget* InParent)
@@ -67,6 +79,9 @@ ViewportHostWidget::ViewportHostWidget(GameApp* InGameApp, QWidget* InParent)
 	, m_game_app_(InGameApp)
 {
 	setObjectName("ViewportHostWidget");
+	setAcceptDrops(false);
+	setAttribute(Qt::WA_NoSystemBackground, true);
+	setAutoFillBackground(false);
 
 	auto* Layout = new QGridLayout(this);
 	Layout->setContentsMargins(0, 0, 0, 0);
@@ -106,6 +121,17 @@ void ViewportHostWidget::FlushPendingResizeIfStable()
 void ViewportHostWidget::showEvent(QShowEvent* InEvent)
 {
 	QWidget::showEvent(InEvent);
+	RaiseOverlayWidgets();
+}
+
+void ViewportHostWidget::resizeEvent(QResizeEvent* InEvent)
+{
+	QWidget::resizeEvent(InEvent);
+	RaiseOverlayWidgets();
+}
+
+void ViewportHostWidget::RaiseOverlayWidgets()
+{
 	if (m_camera_speed_control_)
 	{
 		m_camera_speed_control_->raise();
@@ -116,15 +142,6 @@ void ViewportHostWidget::showEvent(QShowEvent* InEvent)
 				m_camera_speed_control_->raise();
 			}
 		});
-	}
-}
-
-void ViewportHostWidget::resizeEvent(QResizeEvent* InEvent)
-{
-	QWidget::resizeEvent(InEvent);
-	if (m_camera_speed_control_)
-	{
-		m_camera_speed_control_->raise();
 	}
 }
 
@@ -317,6 +334,8 @@ MainWindow::MainWindow(GameApp* InGameApp)
 	setWindowTitle("OpenSpecTest - DX12 MVP (Qt UI)");
 
 	m_viewport_host_ = new ViewportHostWidget(m_game_app_, this);
+	m_viewport_host_->setMinimumSize(0, 0);
+	m_viewport_host_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 	setCentralWidget(m_viewport_host_);
 
 	BuildMenuBar();
@@ -325,6 +344,8 @@ MainWindow::MainWindow(GameApp* InGameApp)
 	BuildWorldContentPanel();
 	BuildDetailPanel();
 	BuildDisplayPanel();
+	BuildAssetBrowserPanel();
+	ConfigureDockLayout();
 	SyncViewportCameraSpeedControl();
 
 	QAction* DeleteSelectedActorAction = new QAction(this);
@@ -412,12 +433,10 @@ void MainWindow::BuildEditorPanel()
 	EditorDock->setObjectName("EditorDock");
 	EditorDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
 
-	auto* Container = new QWidget(EditorDock);
-	auto* Layout = new QVBoxLayout(Container);
-	Layout->setContentsMargins(10, 10, 10, 10);
-	Layout->setSpacing(10);
+	auto* Container = new ScrollablePanelWidget(EditorDock, QMargins(10, 10, 10, 10));
+	auto* Layout = Container->GetContentLayout();
 
-	auto* TackleGroup = new QGroupBox(tr("Gameplay 配置"), Container);
+	auto* TackleGroup = new QGroupBox(tr("Gameplay 配置"), Container->GetContentWidget());
 	auto* TackleForm = new QFormLayout(TackleGroup);
 
 	m_map_id_edit_ = new QLineEdit(TackleGroup);
@@ -442,7 +461,7 @@ void MainWindow::BuildEditorPanel()
 	TackleForm->addRow(tr("出生点 Z"), m_spawn_z_spin_);
 	TackleForm->addRow(tr("初始金币"), m_starting_coins_spin_);
 
-	m_editor_status_label_ = new QLabel(tr("已加载 gameplay 配置。"), Container);
+	m_editor_status_label_ = new QLabel(tr("已加载 gameplay 配置。"), Container->GetContentWidget());
 	m_editor_status_label_->setObjectName("EditorStatusLabel");
 	m_editor_status_label_->setWordWrap(true);
 	m_editor_status_label_->setFrameShape(QFrame::NoFrame);
@@ -470,7 +489,6 @@ void MainWindow::BuildEditorPanel()
 
 	Layout->addWidget(TackleGroup);
 	Layout->addWidget(m_editor_status_label_);
-	Layout->addStretch(1);
 
 	EditorDock->setWidget(Container);
 	addDockWidget(Qt::LeftDockWidgetArea, EditorDock);
@@ -596,24 +614,21 @@ void MainWindow::BuildDisplayPanel()
 	DisplayDock->setObjectName("DisplayDock");
 	DisplayDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
 
-	auto* Container = new QWidget(DisplayDock);
-	auto* Layout = new QVBoxLayout(Container);
-	Layout->setContentsMargins(10, 10, 10, 10);
-	Layout->setSpacing(10);
+	auto* Container = new ScrollablePanelWidget(DisplayDock, QMargins(10, 10, 10, 10));
+	auto* Layout = Container->GetContentLayout();
 
-	auto* RuntimeGroup = new QGroupBox(tr("运行状态"), Container);
+	auto* RuntimeGroup = new QGroupBox(tr("运行状态"), Container->GetContentWidget());
 	auto* RuntimeLayout = new QVBoxLayout(RuntimeGroup);
 	m_runtime_hint_label_ = new QLabel(
 		tr("渲染循环已切换至 Qt 定时驱动，右键按住进入鼠标视角。"), RuntimeGroup);
 	m_runtime_hint_label_->setWordWrap(true);
 	RuntimeLayout->addWidget(m_runtime_hint_label_);
 
-	auto* SceneLabel = new QLabel(tr("场景: MVP池塘区域（占位）"), Container);
+	auto* SceneLabel = new QLabel(tr("场景: MVP池塘区域（占位）"), Container->GetContentWidget());
 	SceneLabel->setFrameShape(QFrame::StyledPanel);
 
 	Layout->addWidget(RuntimeGroup);
 	Layout->addWidget(SceneLabel);
-	Layout->addStretch(1);
 
 	DisplayDock->setWidget(Container);
 	addDockWidget(Qt::RightDockWidgetArea, DisplayDock);
@@ -661,6 +676,57 @@ void MainWindow::RefreshScenePanels()
 	if (m_detail_panel_)
 	{
 		m_detail_panel_->RefreshFromSelection();
+	}
+	RefreshAssetBrowser();
+}
+
+void MainWindow::RefreshAssetBrowser()
+{
+	if (m_asset_browser_panel_)
+	{
+		m_asset_browser_panel_->RefreshFromRegistry();
+	}
+}
+
+void MainWindow::BuildAssetBrowserPanel()
+{
+	auto* AssetBrowserDock = new QDockWidget(tr("Content Browser"), this);
+	AssetBrowserDock->setObjectName("AssetBrowserDock");
+	AssetBrowserDock->setAllowedAreas(
+		Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea | Qt::BottomDockWidgetArea);
+
+	m_asset_browser_panel_ = new AssetBrowserPanelWidget(m_game_app_, AssetBrowserDock);
+	AssetBrowserDock->setWidget(m_asset_browser_panel_);
+	addDockWidget(Qt::BottomDockWidgetArea, AssetBrowserDock);
+}
+
+void MainWindow::ConfigureDockLayout()
+{
+	// 全宽底部栏：恢复默认 corner，使 Content Browser 横跨整个窗口底部。
+	setCorner(Qt::BottomLeftCorner, Qt::BottomDockWidgetArea);
+	setCorner(Qt::BottomRightCorner, Qt::BottomDockWidgetArea);
+
+	auto RelaxDockVerticalResize = [](QDockWidget* InDock)
+	{
+		if (InDock == nullptr)
+		{
+			return;
+		}
+
+		InDock->setMinimumSize(0, 0);
+		if (QWidget* Content = InDock->widget())
+		{
+			Content->setMinimumSize(0, 0);
+			QSizePolicy Policy = Content->sizePolicy();
+			Policy.setVerticalPolicy(QSizePolicy::Ignored);
+			Content->setSizePolicy(Policy);
+		}
+	};
+
+	for (const char* DockObjectName :
+		{"EditorDock", "WorldContentDock", "DetailDock", "DisplayDock", "AssetBrowserDock"})
+	{
+		RelaxDockVerticalResize(findChild<QDockWidget*>(DockObjectName));
 	}
 }
 
@@ -1021,6 +1087,7 @@ void MainWindow::OnImportAssetClicked()
 			.arg(ModelName)
 			.arg(QString::fromStdString(SoftObjectPath)),
 		false);
+	RefreshAssetBrowser();
 }
 
 void MainWindow::OnLoadModelClicked()

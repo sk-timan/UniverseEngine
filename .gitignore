@@ -10,6 +10,8 @@
 !/build_win.bat
 !/CMakeLists.txt
 !/CMakeSettings.json
+!/CMakePresets.json
+!/open_vs_cmake.bat
 
 # 允许白名单目录下的全部内容
 !/.cursor/**

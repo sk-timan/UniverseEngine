@@ -24,7 +24,7 @@ constexpr uint64_t kWorldRootItemId = 0;
 } // namespace
 
 WorldContentPanelWidget::WorldContentPanelWidget(GameApp* InGameApp, QWidget* InParent)
-	: QWidget(InParent)
+	: ScrollablePanelWidget(InParent)
 	, m_game_app_(InGameApp)
 {
 	BuildUi();
@@ -33,16 +33,15 @@ WorldContentPanelWidget::WorldContentPanelWidget(GameApp* InGameApp, QWidget* In
 
 void WorldContentPanelWidget::BuildUi()
 {
-	auto* RootLayout = new QVBoxLayout(this);
-	RootLayout->setContentsMargins(6, 6, 6, 6);
-	RootLayout->setSpacing(6);
+	QWidget* Content = GetContentWidget();
+	QVBoxLayout* ContentLayout = GetContentLayout();
 
-	m_search_edit_ = new QLineEdit(this);
+	m_search_edit_ = new QLineEdit(Content);
 	m_search_edit_->setPlaceholderText(tr("搜索..."));
 	m_search_edit_->setClearButtonEnabled(true);
-	RootLayout->addWidget(m_search_edit_);
+	ContentLayout->addWidget(m_search_edit_);
 
-	m_actor_tree_ = new QTreeWidget(this);
+	m_actor_tree_ = new QTreeWidget(Content);
 	m_actor_tree_->setColumnCount(2);
 	m_actor_tree_->setHeaderLabels({tr("Item Label"), tr("Type")});
 	m_actor_tree_->setRootIsDecorated(true);
@@ -51,15 +50,16 @@ void WorldContentPanelWidget::BuildUi()
 	m_actor_tree_->setContextMenuPolicy(Qt::CustomContextMenu);
 	m_actor_tree_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 	m_actor_tree_->setTextElideMode(Qt::ElideMiddle);
+	m_actor_tree_->setMinimumHeight(160);
 	m_actor_tree_->header()->setStretchLastSection(true);
 	m_actor_tree_->header()->setSectionResizeMode(0, QHeaderView::Stretch);
 	m_actor_tree_->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
 	m_actor_tree_->header()->setMinimumSectionSize(72);
-	RootLayout->addWidget(m_actor_tree_, 1);
+	ContentLayout->addWidget(m_actor_tree_);
 
-	m_status_label_ = new QLabel(tr("0 actors"), this);
+	m_status_label_ = new QLabel(tr("0 actors"), Content);
 	m_status_label_->setObjectName("SecondaryLabel");
-	RootLayout->addWidget(m_status_label_);
+	ContentLayout->addWidget(m_status_label_);
 
 	connect(m_search_edit_, &QLineEdit::textChanged, this, &WorldContentPanelWidget::OnSearchTextChanged);
 	connect(
@@ -72,6 +72,8 @@ void WorldContentPanelWidget::BuildUi()
 		&QTreeWidget::customContextMenuRequested,
 		this,
 		&WorldContentPanelWidget::OnTreeContextMenuRequested);
+
+	RefreshScrollContentGeometry();
 }
 
 void WorldContentPanelWidget::RefreshFromScene()
@@ -202,6 +204,7 @@ void WorldContentPanelWidget::RebuildActorTree()
 	{
 		m_status_label_->setText(tr("无活动关卡"));
 		m_is_tree_refreshing_ = false;
+		RefreshScrollContentGeometry();
 		return;
 	}
 
@@ -266,6 +269,7 @@ void WorldContentPanelWidget::RebuildActorTree()
 	SyncTreeSelection();
 
 	m_is_tree_refreshing_ = false;
+	RefreshScrollContentGeometry();
 }
 
 void WorldContentPanelWidget::PopulateTreeItem(QTreeWidgetItem* InParentItem, const AActor* InActor)

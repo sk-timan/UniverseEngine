@@ -268,8 +268,10 @@ int GameApp::Run(HINSTANCE InInstance, int InShowCommand)
 	(void)InShowCommand;
 	m_hwnd_ = m_main_window_->GetRenderWindowHandle();
 
-	const UINT RenderWidth = static_cast<UINT>(std::max(1, m_main_window_->GetRenderWidth()));
-	const UINT RenderHeight = static_cast<UINT>(std::max(1, m_main_window_->GetRenderHeight()));
+	RECT ClientRect{};
+	GetClientRect(m_hwnd_, &ClientRect);
+	const UINT RenderWidth = static_cast<UINT>(std::max<LONG>(1, ClientRect.right - ClientRect.left));
+	const UINT RenderHeight = static_cast<UINT>(std::max<LONG>(1, ClientRect.bottom - ClientRect.top));
 	if (!m_renderer_.Initialize(m_hwnd_, RenderWidth, RenderHeight))
 	{
 		MessageBoxW(nullptr, L"DX12 initialization failed.", L"OpenSpecTest", MB_ICONERROR | MB_OK);
