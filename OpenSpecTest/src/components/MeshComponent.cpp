@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <utility>
 
+#include "asset/AssetRegistry.h"
+#include "asset/SoftObjectPath.h"
 #include "core/ObjectRegistry.h"
 #include "render/asset/StreamableRenderAsset.h"
 
@@ -28,6 +30,10 @@ const UClass& UMeshComponent::StaticClass()
 void UMeshComponent::SetMeshAssetId(const std::string& InAssetId)
 {
 	MeshAssetId_ = InAssetId;
+	if (const std::optional<FAssetRegistryEntry> RegistryEntry = FAssetRegistry::Get().FindBySoftPath(InAssetId))
+	{
+		MeshAssetGuid_ = RegistryEntry->Guid;
+	}
 }
 
 const std::string& UMeshComponent::GetMeshAssetId() const
@@ -35,12 +41,24 @@ const std::string& UMeshComponent::GetMeshAssetId() const
 	return MeshAssetId_;
 }
 
+void UMeshComponent::SetMeshAssetGuid(const std::string& InGuid)
+{
+	MeshAssetGuid_ = InGuid;
+}
+
+const std::string& UMeshComponent::GetMeshAssetGuid() const
+{
+	return MeshAssetGuid_;
+}
+
 void UMeshComponent::SetMeshAsset(UStreamableRenderAsset* InAsset)
 {
 	MeshAsset_ = InAsset;
 	if (InAsset != nullptr)
 	{
-		MeshAssetId_ = InAsset->GetAssetPath().string();
+		const std::string SoftPath =
+			FSoftObjectPath::Build(InAsset->GetAssetPath().string(), InAsset->GetObjectName());
+		SetMeshAssetId(SoftPath);
 	}
 }
 

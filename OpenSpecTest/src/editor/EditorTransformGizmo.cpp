@@ -1,5 +1,7 @@
 #include "editor/EditorTransformGizmo.h"
 
+#include "editor/EditorActorTransform.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -1034,7 +1036,7 @@ FVector3 FEditorTransformGizmo::GetGizmoOrigin(const AActor* InActor) const
 	{
 		return Root->GetWorldLocation();
 	}
-	return InActor->GetActorTransform().Position;
+	return FEditorActorTransform::GetEditableTransform(InActor).Position;
 }
 
 FRotator3 FEditorTransformGizmo::GetGizmoRotation(const AActor* InActor) const
@@ -1043,7 +1045,7 @@ FRotator3 FEditorTransformGizmo::GetGizmoRotation(const AActor* InActor) const
 	{
 		return FRotator3{};
 	}
-	return InActor->GetActorTransform().Rotation;
+	return FEditorActorTransform::GetEditableTransform(InActor).Rotation;
 }
 
 float FEditorTransformGizmo::ComputeGizmoScale(
@@ -1555,7 +1557,7 @@ bool FEditorTransformGizmo::TryBeginDrag(
 	DragState_ = FGizmoDragState{};
 	DragState_.bIsDragging = true;
 	DragState_.ActiveAxis = Axis;
-	DragState_.DragStartTransform = InActor->GetActorTransform();
+	DragState_.DragStartTransform = FEditorActorTransform::GetEditableTransform(InActor);
 	DragState_.GizmoOrigin = GetGizmoOrigin(InActor);
 	DragState_.GizmoRotation = GetGizmoRotation(InActor);
 	DragState_.AxisDirection =

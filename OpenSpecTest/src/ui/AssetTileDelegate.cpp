@@ -59,8 +59,30 @@ void AssetTileDelegate::paint(
 		kThumbnailSize);
 	InPainter->fillRect(ThumbnailRect, QColor("#1a1a1e"));
 
+	const bool bIsFolder = InIndex.data(static_cast<int>(EAssetListRole::IsFolder)).toBool();
 	const QImage Thumbnail = InIndex.data(static_cast<int>(EAssetListRole::ThumbnailImage)).value<QImage>();
-	if (!Thumbnail.isNull())
+	if (bIsFolder)
+	{
+		const int FolderWidth = ThumbnailRect.width() * 3 / 4;
+		const int FolderHeight = ThumbnailRect.height() * 3 / 5;
+		const QRect FolderBodyRect(
+			ThumbnailRect.center().x() - FolderWidth / 2,
+			ThumbnailRect.center().y() - FolderHeight / 4,
+			FolderWidth,
+			FolderHeight);
+		const QRect FolderTabRect(
+			FolderBodyRect.left(),
+			FolderBodyRect.top() - FolderHeight / 5,
+			FolderWidth / 2,
+			FolderHeight / 5);
+
+		InPainter->setPen(Qt::NoPen);
+		InPainter->setBrush(QColor("#c9972e"));
+		InPainter->drawRoundedRect(FolderTabRect, 2, 2);
+		InPainter->setBrush(QColor("#e0b84d"));
+		InPainter->drawRoundedRect(FolderBodyRect, 3, 3);
+	}
+	else if (!Thumbnail.isNull())
 	{
 		InPainter->drawImage(ThumbnailRect, Thumbnail);
 	}

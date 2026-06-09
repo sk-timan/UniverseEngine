@@ -18,4 +18,5 @@ class AssetFolderTreeBuilder
 public:
 	static FAssetFolderNode BuildFromRegistry(const std::vector<FAssetRegistryEntry>& InEntries);
 	static bool IsAssetInFolder(const FAssetRegistryEntry& InEntry, const std::string& InFolderPath);
+	static bool IsAssetDirectChildOfFolder(const FAssetRegistryEntry& InEntry, const std::string& InFolderPath);
 };

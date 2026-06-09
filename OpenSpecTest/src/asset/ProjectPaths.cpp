@@ -1,5 +1,7 @@
 #include "asset/ProjectPaths.h"
 
+#include <algorithm>
+
 #include "asset/AssetSerializer.h"
 #include "asset/AssetPackageHeader.h"
 #include "asset/SoftObjectPath.h"
@@ -10,10 +12,37 @@ std::filesystem::path GetOpenSpecTestRoot()
 {
 	return std::filesystem::path(__FILE__).parent_path().parent_path().parent_path();
 }
+
+std::string U8StringToStdString(const std::u8string& InU8Text)
+{
+	return std::string(reinterpret_cast<const char*>(InU8Text.data()), InU8Text.size());
+}
+
+std::u8string StdStringToU8String(const std::string& InUtf8Text)
+{
+	return std::u8string(reinterpret_cast<const char8_t*>(InUtf8Text.data()), InUtf8Text.size());
+}
 } // namespace
 
 const std::filesystem::path GProjectDataDirectory = GetOpenSpecTestRoot() / "data";
 const std::filesystem::path GProjectContentDirectory = GetOpenSpecTestRoot() / "Content";
+
+std::string FsPathComponentUtf8(const std::filesystem::path& InPath)
+{
+	return U8StringToStdString(InPath.filename().u8string());
+}
+
+std::string FsPathUtf8Generic(const std::filesystem::path& InPath)
+{
+	std::string Result = U8StringToStdString(InPath.u8string());
+	std::replace(Result.begin(), Result.end(), '\\', '/');
+	return Result;
+}
+
+std::filesystem::path Utf8GenericToFsPath(const std::string& InUtf8Path)
+{
+	return std::filesystem::path(StdStringToU8String(InUtf8Path));
+}
 
 std::filesystem::path ResolveContentFilePath(const std::filesystem::path& InRelativePath)
 {
@@ -55,8 +84,8 @@ bool TryBuildSoftPathFromUAssetFile(
 	{
 		std::filesystem::path AssetPathPath = RelativePath;
 		AssetPathPath.replace_extension("");
-		const std::string AssetPath = AssetPathPath.generic_string();
-		const std::string ObjectName = AssetPathPath.filename().string();
+		const std::string AssetPath = FsPathUtf8Generic(AssetPathPath);
+		const std::string ObjectName = FsPathComponentUtf8(AssetPathPath);
 		*OutSoftObjectPath = FSoftObjectPath::Build(AssetPath, ObjectName);
 		return true;
 	}

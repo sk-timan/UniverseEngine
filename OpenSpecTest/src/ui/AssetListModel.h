@@ -16,6 +16,8 @@ enum class EAssetListRole
 	TypeDisplayName,
 	CacheKey,
 	ThumbnailImage,
+	IsFolder,
+	FolderPath,
 };
 
 struct FAssetBrowserListItem
@@ -23,6 +25,8 @@ struct FAssetBrowserListItem
 	FAssetRegistryEntry Entry;
 	QImage Thumbnail;
 	bool bThumbnailPending = false;
+	bool bIsFolder = false;
+	std::string FolderPath;
 };
 
 class AssetListModel final : public QAbstractListModel

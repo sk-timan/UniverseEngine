@@ -148,6 +148,14 @@ FTransform FTransform::Combine(const FTransform& InParentWorld, const FTransform
 	return FromMatrix(InRelative.ToMatrix() * InParentWorld.ToMatrix());
 }
 
+FTransform FTransform::ComputeRelative(const FTransform& InParentWorld, const FTransform& InChildWorld)
+{
+	const DirectX::XMMATRIX ParentMatrix = InParentWorld.ToMatrix();
+	const DirectX::XMMATRIX ChildMatrix = InChildWorld.ToMatrix();
+	const DirectX::XMMATRIX InvParentMatrix = DirectX::XMMatrixInverse(nullptr, ParentMatrix);
+	return FromMatrix(DirectX::XMMatrixMultiply(ChildMatrix, InvParentMatrix));
+}
+
 FTransform FTransform::FromMatrix(const DirectX::XMMATRIX& InMatrix)
 {
 	FTransform Result;

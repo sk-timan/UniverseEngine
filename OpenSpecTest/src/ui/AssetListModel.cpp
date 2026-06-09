@@ -85,7 +85,16 @@ Qt::ItemFlags AssetListModel::flags(const QModelIndex& InIndex) const
 
 	Qt::ItemFlags ItemFlags = QAbstractListModel::flags(InIndex);
 	const FAssetBrowserListItem* Item = GetItemAt(InIndex.row());
-	if (Item != nullptr && AssetTypeInfo::IsMeshAssetType(Item->Entry.Type))
+	if (Item == nullptr)
+	{
+		return ItemFlags;
+	}
+
+	if (Item->bIsFolder)
+	{
+		ItemFlags |= Qt::ItemIsDropEnabled;
+	}
+	else if (AssetTypeInfo::IsMeshAssetType(Item->Entry.Type))
 	{
 		ItemFlags |= Qt::ItemIsDragEnabled;
 	}
@@ -111,19 +120,35 @@ QVariant AssetListModel::data(const QModelIndex& InIndex, int InRole) const
 	switch (static_cast<EAssetListRole>(InRole))
 	{
 	case EAssetListRole::SoftObjectPath:
+		if (Item.bIsFolder)
+		{
+			return {};
+		}
 		return QString::fromStdString(FSoftObjectPath::Build(Entry.AssetPath, Entry.ObjectName));
 	case EAssetListRole::AssetType:
 		return QString::fromStdString(Entry.Type);
 	case EAssetListRole::UAssetFilePath:
+		if (Item.bIsFolder)
+		{
+			return {};
+		}
 		return QString::fromStdString(Entry.UAssetFilePath.string());
 	case EAssetListRole::AccentColor:
-		return TypeInfo.AccentColor;
+		return Item.bIsFolder ? QColor("#6a8caf") : TypeInfo.AccentColor;
 	case EAssetListRole::TypeDisplayName:
-		return QString::fromStdString(TypeInfo.DisplayName);
+		return Item.bIsFolder ? QStringLiteral("文件夹") : QString::fromStdString(TypeInfo.DisplayName);
 	case EAssetListRole::CacheKey:
+		if (Item.bIsFolder)
+		{
+			return {};
+		}
 		return BuildAssetThumbnailCacheKey(Entry);
 	case EAssetListRole::ThumbnailImage:
 		return Item.Thumbnail;
+	case EAssetListRole::IsFolder:
+		return Item.bIsFolder;
+	case EAssetListRole::FolderPath:
+		return QString::fromStdString(Item.FolderPath);
 	default:
 		return {};
 	}
@@ -139,5 +164,7 @@ QHash<int, QByteArray> AssetListModel::roleNames() const
 		{static_cast<int>(EAssetListRole::TypeDisplayName), "typeDisplayName"},
 		{static_cast<int>(EAssetListRole::CacheKey), "cacheKey"},
 		{static_cast<int>(EAssetListRole::ThumbnailImage), "thumbnailImage"},
+		{static_cast<int>(EAssetListRole::IsFolder), "isFolder"},
+		{static_cast<int>(EAssetListRole::FolderPath), "folderPath"},
 	};
 }

@@ -21,6 +21,9 @@ public:
 	void SetMeshAssetId(const std::string& InAssetId);
 	const std::string& GetMeshAssetId() const;
 
+	void SetMeshAssetGuid(const std::string& InGuid);
+	const std::string& GetMeshAssetGuid() const;
+
 	void SetMeshAsset(UStreamableRenderAsset* InAsset);
 	UStreamableRenderAsset* GetMeshAsset() const;
 
@@ -42,6 +45,7 @@ public:
 
 private:
 	std::string MeshAssetId_;
+	std::string MeshAssetGuid_;
 	UStreamableRenderAsset* MeshAsset_ = nullptr;
 
 	std::vector<FMaterialOverride> MaterialOverrides_;

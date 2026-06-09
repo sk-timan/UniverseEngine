@@ -62,6 +62,10 @@ public:
 		const std::filesystem::path& InUAssetFilePath,
 		const FActorTransform& InActorTransform,
 		std::string* OutErrorMessage);
+	bool LoadModelToActiveLevelFromSoftPath(
+		const std::string& InSoftObjectPath,
+		const FActorTransform& InActorTransform,
+		std::string* OutErrorMessage);
 	void RefreshActiveLevelRender(bool bInvalidateSceneCache = true);
 	bool ApplyGameplayConfig(const GameplayConfig& InConfig, std::string* OutErrorMessage);
 	std::filesystem::path GetMapsDirectory() const;
@@ -77,11 +81,21 @@ public:
 	void SelectActor(uint64_t InActorObjectId);
 	bool DeleteSelectedActor();
 	bool SetSelectedActorTransform(const FActorTransform& InTransform, bool bBumpSceneRevision = false);
+	FActorTransform GetSelectedActorEditableTransform() const;
+	bool RenameActor(uint64_t InActorObjectId, const std::string& InNewName, std::string* OutErrorMessage);
+	bool ReparentActor(
+		uint64_t InChildActorObjectId,
+		uint64_t InNewParentActorObjectId,
+		std::string* OutErrorMessage);
 	EGizmoMode GetGizmoMode() const;
 	void SetGizmoMode(EGizmoMode InMode);
 	void OnViewportLeftMousePress(int InX, int InY);
 	void OnViewportLeftMouseMove(int InX, int InY);
 	void OnViewportLeftMouseRelease(int InX, int InY);
+	void OnViewportRightMousePress(int InX, int InY);
+	void OnViewportRightMouseMove(int InX, int InY);
+	void OnViewportRightMouseRelease(int InX, int InY);
+	void OnViewportMouseWheel(float InAngleDeltaY);
 	uint64_t PickActorAtViewportPosition(int InX, int InY);
 	bool IsSelectedActorAabbDebugEnabled() const;
 	void SetSelectedActorAabbDebugEnabled(bool bIsEnabled);
@@ -91,6 +105,7 @@ public:
 	void SetSelectedActorSectionBoundsDebugEnabled(bool bIsEnabled);
 	const FEditorRotateDragLabel& GetRotateDragLabel() const;
 	void MapPickScreenToViewportWidget(float InPickScreenX, float InPickScreenY, int* OutWidgetX, int* OutWidgetY) const;
+	bool ComputeViewportDropSpawnPosition(int InPhysicalX, int InPhysicalY, FVector3* OutWorldPosition) const;
 
 private:
 	void GetViewportSize(UINT* OutWidth, UINT* OutHeight) const;
@@ -101,6 +116,9 @@ private:
 	void BeginCameraOrbitAroundSelection(int InMouseX, int InMouseY);
 	void UpdateCameraOrbit(int InMouseX, int InMouseY);
 	void EndCameraOrbit();
+	void BeginCameraDollyAroundFocus(int InMouseX, int InMouseY);
+	void UpdateCameraDolly(int InMouseX, int InMouseY);
+	void EndCameraDolly();
 	void UpdateInput(float DeltaSeconds);
 	void TickEditorInteraction(float DeltaSeconds);
 	void BumpSceneRevision();
@@ -172,6 +190,11 @@ private:
 	float m_camera_orbit_radius_ = 0.0f;
 	int m_camera_orbit_last_mouse_x_ = 0;
 	int m_camera_orbit_last_mouse_y_ = 0;
+	bool m_b_camera_dolly_active_ = false;
+	FVector3 m_camera_dolly_focus_{};
+	float m_camera_dolly_distance_ = 0.0f;
+	int m_camera_dolly_last_mouse_x_ = 0;
+	int m_camera_dolly_last_mouse_y_ = 0;
 	bool m_key_w_was_down_ = false;
 	bool m_key_e_was_down_ = false;
 	bool m_key_r_was_down_ = false;

@@ -34,6 +34,7 @@ struct FTransform
 	DirectX::XMMATRIX ToMatrix() const;
 	static FTransform FromMatrix(const DirectX::XMMATRIX& InMatrix);
 	static FTransform Combine(const FTransform& InParentWorld, const FTransform& InRelative);
+	static FTransform ComputeRelative(const FTransform& InParentWorld, const FTransform& InChildWorld);
 
 	// Row-vector rotation compose: R_new = R_start * R_delta (matches ToMatrix / RotateGizmoDirection).
 	static FRotator3 RotateByWorldAxis(const FRotator3& InRotation, const FVector3& InWorldUnitAxis, float InDeltaRadians);

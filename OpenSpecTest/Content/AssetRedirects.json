@@ -1,0 +1,14 @@
+{
+  "redirects": {
+    "Meshes/Imported/2CylinderEngine.2CylinderEngine": "Meshes/Import/SM_2CE.SM_2CE",
+    "Meshes/Imported/SM_2CE.SM_2CE": "Meshes/Import/SM_2CE.SM_2CE",
+    "Meshes/Imported/SM_2CylinderEngine.SM_2CylinderEngine": "Meshes/Import/SM_2CE.SM_2CE",
+    "Meshes/Imported/animation_with_skeleton.animation_with_skeleton": "Meshes/Import/animation_with_skeleton.animation_with_skeleton",
+    "Meshes/Imported/box.box": "Meshes/Import/box.box",
+    "Meshes/Imported/huesitos.huesitos": "Meshes/Import/huesitos.huesitos",
+    "Models/huesitos.huesitos": "Models/init/huesitos.huesitos",
+    "Models/init/huesitos.huesitos": "Models/init/huesitos.huesitos",
+    "Models/spider.spider": "Models/init/spider.spider"
+  },
+  "version": 1
+}

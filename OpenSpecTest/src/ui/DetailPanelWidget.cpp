@@ -249,7 +249,7 @@ void DetailPanelWidget::RefreshFromSelection()
 	m_header_label_->setText(HeaderText);
 	UpdateHeaderLabelLayoutWidth();
 	RefreshScrollContentGeometry();
-	PopulateFromActorTransform(SelectedActor->GetActorTransform());
+	PopulateFromActorTransform(m_game_app_->GetSelectedActorEditableTransform());
 }
 
 void DetailPanelWidget::PopulateFromActorTransform(const FActorTransform& InTransform)

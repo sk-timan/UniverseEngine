@@ -1,7 +1,11 @@
 #include "asset/AssetFolderTree.h"
 
 #include <algorithm>
+#include <filesystem>
+#include <functional>
 #include <unordered_map>
+
+#include "asset/ProjectPaths.h"
 
 namespace
 {
@@ -43,6 +47,41 @@ void SortFolderChildren(FAssetFolderNode* InNode)
 		SortFolderChildren(Child.get());
 	}
 }
+
+void MergeContentDirectories(FAssetFolderNode* InContentNode)
+{
+	if (InContentNode == nullptr || !std::filesystem::exists(GProjectContentDirectory))
+	{
+		return;
+	}
+
+	std::function<void(const std::filesystem::path&, FAssetFolderNode*)> WalkDirectory;
+	WalkDirectory = [&](const std::filesystem::path& InDirectory, FAssetFolderNode* InParentNode)
+	{
+		std::error_code ErrorCode;
+		for (const auto& DirectoryEntry : std::filesystem::directory_iterator(InDirectory, ErrorCode))
+		{
+			if (ErrorCode || !DirectoryEntry.is_directory())
+			{
+				continue;
+			}
+
+			const std::string Segment = FsPathComponentUtf8(DirectoryEntry.path());
+			const std::filesystem::path RelativePath =
+				std::filesystem::relative(DirectoryEntry.path(), GProjectContentDirectory, ErrorCode);
+			if (ErrorCode || RelativePath.empty())
+			{
+				continue;
+			}
+
+			const std::string VirtualPath = FsPathUtf8Generic(RelativePath);
+			FAssetFolderNode* ChildNode = FindOrCreateChild(InParentNode, Segment, VirtualPath);
+			WalkDirectory(DirectoryEntry.path(), ChildNode);
+		}
+	};
+
+	WalkDirectory(GProjectContentDirectory, InContentNode);
+}
 } // namespace
 
 FAssetFolderNode AssetFolderTreeBuilder::BuildFromRegistry(const std::vector<FAssetRegistryEntry>& InEntries)
@@ -64,15 +103,27 @@ FAssetFolderNode AssetFolderTreeBuilder::BuildFromRegistry(const std::vector<FAs
 			continue;
 		}
 
+		const size_t LastSlashIndex = Entry.AssetPath.find_last_of('/');
+		if (LastSlashIndex == std::string::npos)
+		{
+			continue;
+		}
+
+		const std::string FolderOnlyPath = Entry.AssetPath.substr(0, LastSlashIndex);
+		if (FolderOnlyPath.empty())
+		{
+			continue;
+		}
+
 		std::string CurrentPath;
 		FAssetFolderNode* CurrentNode = ContentRaw;
 		size_t Start = 0;
-		while (Start < Entry.AssetPath.size())
+		while (Start < FolderOnlyPath.size())
 		{
-			const size_t SlashIndex = Entry.AssetPath.find('/', Start);
+			const size_t SlashIndex = FolderOnlyPath.find('/', Start);
 			const std::string Segment = (SlashIndex == std::string::npos)
-				? Entry.AssetPath.substr(Start)
-				: Entry.AssetPath.substr(Start, SlashIndex - Start);
+				? FolderOnlyPath.substr(Start)
+				: FolderOnlyPath.substr(Start, SlashIndex - Start);
 			if (Segment.empty())
 			{
 				break;
@@ -88,8 +139,33 @@ FAssetFolderNode AssetFolderTreeBuilder::BuildFromRegistry(const std::vector<FAs
 		}
 	}
 
+	MergeContentDirectories(ContentRaw);
 	SortFolderChildren(&Root);
 	return Root;
+}
+
+bool AssetFolderTreeBuilder::IsAssetDirectChildOfFolder(
+	const FAssetRegistryEntry& InEntry,
+	const std::string& InFolderPath)
+{
+	if (InFolderPath.empty() || InFolderPath == "All")
+	{
+		return false;
+	}
+
+	if (InFolderPath == "Content")
+	{
+		return InEntry.AssetPath.find('/') == std::string::npos;
+	}
+
+	const std::string Prefix = InFolderPath + "/";
+	if (InEntry.AssetPath.size() <= Prefix.size() || InEntry.AssetPath.compare(0, Prefix.size(), Prefix) != 0)
+	{
+		return false;
+	}
+
+	const std::string Remainder = InEntry.AssetPath.substr(Prefix.size());
+	return !Remainder.empty() && Remainder.find('/') == std::string::npos;
 }
 
 bool AssetFolderTreeBuilder::IsAssetInFolder(

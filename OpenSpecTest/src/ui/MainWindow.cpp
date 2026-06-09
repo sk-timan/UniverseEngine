@@ -5,6 +5,10 @@
 #include <QApplication>
 #include <QCloseEvent>
 #include <QDateTime>
+#include <QDragEnterEvent>
+#include <QDragMoveEvent>
+#include <QDropEvent>
+#include <QMimeData>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -39,6 +43,8 @@
 #include "ui/EditorPerformanceDialog.h"
 #include "ui/EditorPreferencesDialog.h"
 #include "ui/DetailPanelWidget.h"
+#include "asset/AssetRegistry.h"
+#include "asset/AssetTypeInfo.h"
 #include "asset/ProjectPaths.h"
 #include "asset/SoftObjectPath.h"
 #include "ui/AssetBrowserPanelWidget.h"
@@ -67,7 +73,7 @@ RenderViewportWidget::RenderViewportWidget(GameApp* InGameApp, QWidget* InParent
 	setObjectName("RenderViewportWidget");
 	setFocusPolicy(Qt::StrongFocus);
 	setMouseTracking(true);
-	setAcceptDrops(false);
+	setAcceptDrops(true);
 	setAttribute(Qt::WA_NativeWindow, true);
 	setAttribute(Qt::WA_DontCreateNativeAncestors, true);
 	setAttribute(Qt::WA_NoSystemBackground, true);
@@ -220,6 +226,71 @@ void ViewportHostWidget::SetupCameraSpeedControl()
 		});
 }
 
+void RenderViewportWidget::dragEnterEvent(QDragEnterEvent* InEvent)
+{
+	if (InEvent->mimeData()->hasFormat(kSoftObjectPathMimeType))
+	{
+		InEvent->acceptProposedAction();
+		return;
+	}
+
+	InEvent->ignore();
+}
+
+void RenderViewportWidget::dragMoveEvent(QDragMoveEvent* InEvent)
+{
+	if (InEvent->mimeData()->hasFormat(kSoftObjectPathMimeType))
+	{
+		InEvent->acceptProposedAction();
+		return;
+	}
+
+	InEvent->ignore();
+}
+
+void RenderViewportWidget::dropEvent(QDropEvent* InEvent)
+{
+	const QMimeData* MimeData = InEvent->mimeData();
+	if (m_game_app_ == nullptr || MimeData == nullptr || !MimeData->hasFormat(kSoftObjectPathMimeType))
+	{
+		InEvent->ignore();
+		return;
+	}
+
+	const std::string SoftPath = QString::fromUtf8(MimeData->data(kSoftObjectPathMimeType)).toStdString();
+	const std::optional<FAssetRegistryEntry> RegistryEntry = FAssetRegistry::Get().FindBySoftPath(SoftPath);
+	if (!RegistryEntry.has_value() || !AssetTypeInfo::IsMeshAssetType(RegistryEntry->Type))
+	{
+		QMessageBox::information(
+			window(),
+			tr("拖放失败"),
+			tr("该资产类型不支持拖放到视口。"));
+		InEvent->ignore();
+		return;
+	}
+
+	FActorTransform SpawnTransform = FActorTransform::Identity();
+	const QPoint PhysicalPos = MapViewportMouseToPhysical(this, InEvent->position());
+	FVector3 SpawnPosition{};
+	if (m_game_app_->ComputeViewportDropSpawnPosition(PhysicalPos.x(), PhysicalPos.y(), &SpawnPosition))
+	{
+		SpawnTransform.Position = SpawnPosition;
+	}
+
+	std::string ErrorMessage;
+	if (!m_game_app_->LoadModelToActiveLevelFromSoftPath(SoftPath, SpawnTransform, &ErrorMessage))
+	{
+		QMessageBox::warning(
+			window(),
+			tr("拖放失败"),
+			tr("无法生成 Actor: %1").arg(QString::fromStdString(ErrorMessage)));
+		InEvent->ignore();
+		return;
+	}
+
+	InEvent->acceptProposedAction();
+}
+
 void RenderViewportWidget::focusInEvent(QFocusEvent* InEvent)
 {
 	if (m_game_app_ != nullptr)
@@ -239,7 +310,15 @@ void RenderViewportWidget::mousePressEvent(QMouseEvent* InEvent)
 	{
 		if (InEvent->button() == Qt::RightButton)
 		{
-			m_game_app_->SetMouseLookActive(true, false);
+			const QPoint PhysicalPos = MapViewportMouseToPhysical(this, InEvent->position());
+			if ((InEvent->modifiers() & Qt::AltModifier) != 0)
+			{
+				m_game_app_->OnViewportRightMousePress(PhysicalPos.x(), PhysicalPos.y());
+			}
+			else
+			{
+				m_game_app_->SetMouseLookActive(true, false);
+			}
 		}
 		else if (InEvent->button() == Qt::LeftButton)
 		{
@@ -256,6 +335,7 @@ void RenderViewportWidget::mouseMoveEvent(QMouseEvent* InEvent)
 	{
 		const QPoint PhysicalPos = MapViewportMouseToPhysical(this, InEvent->position());
 		m_game_app_->OnViewportLeftMouseMove(PhysicalPos.x(), PhysicalPos.y());
+		m_game_app_->OnViewportRightMouseMove(PhysicalPos.x(), PhysicalPos.y());
 	}
 	QWidget::mouseMoveEvent(InEvent);
 }
@@ -266,6 +346,8 @@ void RenderViewportWidget::mouseReleaseEvent(QMouseEvent* InEvent)
 	{
 		if (InEvent->button() == Qt::RightButton)
 		{
+			const QPoint PhysicalPos = MapViewportMouseToPhysical(this, InEvent->position());
+			m_game_app_->OnViewportRightMouseRelease(PhysicalPos.x(), PhysicalPos.y());
 			m_game_app_->SetMouseLookActive(false, true);
 		}
 		else if (InEvent->button() == Qt::LeftButton)
@@ -275,6 +357,23 @@ void RenderViewportWidget::mouseReleaseEvent(QMouseEvent* InEvent)
 		}
 	}
 	QWidget::mouseReleaseEvent(InEvent);
+}
+
+void RenderViewportWidget::wheelEvent(QWheelEvent* InEvent)
+{
+	if (!hasFocus())
+	{
+		setFocus(Qt::MouseFocusReason);
+	}
+
+	if (m_game_app_ != nullptr)
+	{
+		m_game_app_->OnViewportMouseWheel(static_cast<float>(InEvent->angleDelta().y()));
+		InEvent->accept();
+		return;
+	}
+
+	QWidget::wheelEvent(InEvent);
 }
 
 void RenderViewportWidget::resizeEvent(QResizeEvent* InEvent)
@@ -700,6 +799,58 @@ void MainWindow::BuildAssetBrowserPanel()
 	addDockWidget(Qt::BottomDockWidgetArea, AssetBrowserDock);
 }
 
+namespace
+{
+constexpr int kBottomDockHeightPercent = 25;
+constexpr int kLeftDockWidthPercent = 18;
+constexpr int kRightDockWidthPercent = 18;
+constexpr int kWorldContentHeightPercent = 45;
+} // namespace
+
+void MainWindow::ApplyInitialDockProportions()
+{
+	QDockWidget* EditorDock = findChild<QDockWidget*>("EditorDock");
+	QDockWidget* WorldContentDock = findChild<QDockWidget*>("WorldContentDock");
+	QDockWidget* DetailDock = findChild<QDockWidget*>("DetailDock");
+	QDockWidget* AssetBrowserDock = findChild<QDockWidget*>("AssetBrowserDock");
+
+	const int TotalWidth = width();
+	const int TotalHeight = height();
+	if (TotalWidth <= 0 || TotalHeight <= 0)
+	{
+		return;
+	}
+
+	const int BottomHeight = TotalHeight * kBottomDockHeightPercent / 100;
+	const int TopHeight = TotalHeight - BottomHeight;
+	const int LeftWidth = TotalWidth * kLeftDockWidthPercent / 100;
+	const int RightWidth = TotalWidth * kRightDockWidthPercent / 100;
+	const int WorldContentHeight = TopHeight * kWorldContentHeightPercent / 100;
+	const int DetailHeight = TopHeight - WorldContentHeight;
+
+	if (EditorDock != nullptr)
+	{
+		resizeDocks({EditorDock}, {LeftWidth}, Qt::Horizontal);
+	}
+	if (DetailDock != nullptr)
+	{
+		resizeDocks({DetailDock}, {RightWidth}, Qt::Horizontal);
+	}
+	if (WorldContentDock != nullptr && DetailDock != nullptr)
+	{
+		resizeDocks({WorldContentDock, DetailDock}, {WorldContentHeight, DetailHeight}, Qt::Vertical);
+	}
+	if (AssetBrowserDock != nullptr)
+	{
+		resizeDocks({AssetBrowserDock}, {BottomHeight}, Qt::Vertical);
+	}
+
+	if (m_asset_browser_panel_ != nullptr)
+	{
+		m_asset_browser_panel_->ApplyInitialSplitterProportions();
+	}
+}
+
 void MainWindow::ConfigureDockLayout()
 {
 	// 全宽底部栏：恢复默认 corner，使 Content Browser 横跨整个窗口底部。
@@ -728,6 +879,8 @@ void MainWindow::ConfigureDockLayout()
 	{
 		RelaxDockVerticalResize(findChild<QDockWidget*>(DockObjectName));
 	}
+
+	QTimer::singleShot(0, this, &MainWindow::ApplyInitialDockProportions);
 }
 
 void MainWindow::BuildMenuBar()

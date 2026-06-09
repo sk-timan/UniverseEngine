@@ -27,7 +27,10 @@ public:
 	void RegisterFromDisk(const std::filesystem::path& InUAssetPath);
 	void RegisterFromHeader(const FAssetPackageHeader& InHeader, const std::filesystem::path& InUAssetPath);
 
+	void RemoveByAssetPath(const std::string& InAssetPath);
+
 	std::optional<FAssetRegistryEntry> FindBySoftPath(const std::string& InSoftPath) const;
+	std::optional<FAssetRegistryEntry> FindByGuid(const std::string& InGuid) const;
 	std::optional<FAssetRegistryEntry> FindByAssetPath(const std::string& InAssetPath) const;
 	std::vector<FAssetRegistryEntry> ListAssets(const std::string& InTypeFilter = {}) const;
 	uint64_t GetRevision() const;

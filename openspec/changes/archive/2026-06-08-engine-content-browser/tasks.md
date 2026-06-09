@@ -36,8 +36,8 @@
 
 ## 6. 验证
 
-- [ ] 6.1 手动验证：启动后左树/右格展示全部 uasset，Type 与 header 一致
-- [ ] 6.2 手动验证：StaticMesh/SkeletalMesh 出现 CPU 预览缩略图；未知类型为默认图
-- [ ] 6.3 手动验证：搜索与类型过滤、拖拽 mesh 到视口生成 Actor
-- [ ] 6.4 手动验证：右键 Reimport 后 guid 不变、缩略图与 Tile 刷新
-- [ ] 6.5 手动验证：Import 新资产后浏览器自动出现新 Tile
+- [x] 6.1 手动验证：启动后左树/右格展示全部 uasset，Type 与 header 一致
+- [x] 6.2 手动验证：StaticMesh/SkeletalMesh 出现 CPU 预览缩略图；未知类型为默认图
+- [x] 6.3 手动验证：搜索与类型过滤、拖拽 mesh 到视口生成 Actor
+- [x] 6.4 手动验证：右键 Reimport 后 guid 不变、缩略图与 Tile 刷新
+- [x] 6.5 手动验证：Import 新资产后浏览器自动出现新 Tile

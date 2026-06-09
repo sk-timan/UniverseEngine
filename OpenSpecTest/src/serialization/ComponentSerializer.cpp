@@ -1,5 +1,7 @@
 #include "serialization/ComponentSerializer.h"
 
+#include "asset/AssetRegistry.h"
+#include "asset/AssetReferenceResolver.h"
 #include "components/ActorComponent.h"
 #include "components/MeshComponent.h"
 #include "world/Actor.h"
@@ -110,7 +112,9 @@ UActorComponent* ComponentSerializer::DeserializeComponent(
 	if (Component->IsA(UMeshComponent::StaticClass()))
 	{
 		UMeshComponent* MeshComponent = static_cast<UMeshComponent*>(Component);
-		MeshComponent->SetMeshAssetId(InData.MeshAssetPath.empty() ? InData.MeshAssetId : InData.MeshAssetPath);
+		const std::string MeshReference = InData.MeshAssetPath.empty() ? InData.MeshAssetId : InData.MeshAssetPath;
+		MeshComponent->SetMeshAssetGuid(InData.MeshAssetGuid);
+		MeshComponent->SetMeshAssetId(MeshReference);
 		MeshComponent->SetForcedLODLevel(InData.ForcedLODLevel);
 		MeshComponent->SetVisibility(InData.bVisible);
 		for (const FMaterialOverrideSaveData& Override : InData.MaterialOverrides)
@@ -148,6 +152,26 @@ void ComponentSerializer::SerializeMeshComponent(const UMeshComponent* InCompone
 
 	OutData->MeshAssetId = InComponent->GetMeshAssetId();
 	OutData->MeshAssetPath = InComponent->GetMeshAssetId();
+	OutData->MeshAssetGuid = InComponent->GetMeshAssetGuid();
+	if (OutData->MeshAssetGuid.empty() && !OutData->MeshAssetPath.empty())
+	{
+		if (const std::optional<FAssetRegistryEntry> RegistryEntry =
+				FAssetRegistry::Get().FindBySoftPath(OutData->MeshAssetPath))
+		{
+			OutData->MeshAssetGuid = RegistryEntry->Guid;
+		}
+	}
+	if (!OutData->MeshAssetGuid.empty())
+	{
+		const FResolvedAssetReference ResolvedReference = FAssetReferenceResolver::Resolve(
+			OutData->MeshAssetGuid,
+			OutData->MeshAssetPath);
+		if (!ResolvedReference.SoftObjectPath.empty())
+		{
+			OutData->MeshAssetPath = ResolvedReference.SoftObjectPath;
+			OutData->MeshAssetId = ResolvedReference.SoftObjectPath;
+		}
+	}
 	for (const auto& Override : InComponent->GetMaterialOverrides())
 	{
 		FMaterialOverrideSaveData OverrideData;

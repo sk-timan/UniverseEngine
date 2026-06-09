@@ -21,6 +21,9 @@
 #include "data/GameplayConfig.h"
 
 class QCloseEvent;
+class QDragEnterEvent;
+class QDragMoveEvent;
+class QDropEvent;
 class QFocusEvent;
 class QMouseEvent;
 class QWheelEvent;
@@ -42,10 +45,14 @@ public:
 	void FlushPendingResizeIfStable();
 
 protected:
+	void dragEnterEvent(QDragEnterEvent* InEvent) override;
+	void dragMoveEvent(QDragMoveEvent* InEvent) override;
+	void dropEvent(QDropEvent* InEvent) override;
 	void focusInEvent(QFocusEvent* InEvent) override;
 	void mousePressEvent(QMouseEvent* InEvent) override;
 	void mouseMoveEvent(QMouseEvent* InEvent) override;
 	void mouseReleaseEvent(QMouseEvent* InEvent) override;
+	void wheelEvent(QWheelEvent* InEvent) override;
 	void resizeEvent(QResizeEvent* InEvent) override;
 	void focusOutEvent(QFocusEvent* InEvent) override;
 
@@ -109,6 +116,7 @@ private:
 	void BuildDetailPanel();
 	void BuildAssetBrowserPanel();
 	void ConfigureDockLayout();
+	void ApplyInitialDockProportions();
 	void RefreshScenePanels();
 	void RefreshAssetBrowser();
 	void UpdateRuntimeDisplay();

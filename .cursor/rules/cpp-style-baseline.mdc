@@ -1,0 +1,56 @@
+---
+description: C++ (.h/.cpp) baseline style conventions for OpenSpecTest
+alwaysApply: true
+---
+
+# OpenSpecTest C++ Style Baseline
+
+- Style source: align with UE5 `Object.h` and `Obj.cpp`.
+- Indentation and braces: use tabs and Allman style (`if (...)` then next-line `{`).
+- Naming: prefer `PascalCase` for functions, methods, types, and most variables.
+- Parameter naming: keep explicit semantic prefixes such as `InX`, `OutX`, `bFlag` when applicable.
+- Function signatures: keep signature on one line whenever practical.
+- Parameter count limit: when a function needs more than 4 parameters, create a dedicated params struct instead of extending the signature.
+- Boolean naming: use `bIs...` / `bHas...` style.
+- UE-style type prefixes where applicable: `F`(struct), `U`(UObject class), `A`(Actor), `E`(enum), `I`(interface), `T`(template/container).
+- Constants: prefer `constexpr` with descriptive PascalCase identifiers; preserve existing project constants unless refactoring.
+- In `.cpp`, place file-local helpers in an anonymous namespace.
+- Prefer guard checks and early returns for invalid state/null.
+- Keep pointer checks explicit before writing through out-params.
+- Include order: related engine/project headers first, then dependent module headers; keep grouping stable and readable.
+- Comments: use concise block headers for large sections when needed; avoid redundant comments.
+
+## Migration rule
+
+- For existing files, do not rename stable public symbols unless required.
+- For new files and newly added symbols, apply UE-style naming and formatting by default.
+
+## Example
+
+```cpp
+bool FGameplayConfigStore::LoadFromFile(const std::filesystem::path& InFilePath, FGameplayConfig* OutConfig, std::string* OutErrorMessage)
+{
+	if (OutConfig == nullptr)
+	{
+		if (OutErrorMessage != nullptr)
+		{
+			*OutErrorMessage = "OutConfig is null.";
+		}
+		return false;
+	}
+	return true;
+}
+```
+
+```cpp
+struct FSpawnQueryParams
+{
+	float X = 0.0f;
+	float Y = 0.0f;
+	float Z = 0.0f;
+	float Radius = 0.0f;
+	int32 MaxCount = 0;
+};
+
+void FindSpawnPoints(const FSpawnQueryParams& InParams);
+```

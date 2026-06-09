@@ -4,16 +4,23 @@
 #include <functional>
 #include <unordered_map>
 
+#include <QAction>
+#include <QDragMoveEvent>
+#include <QDropEvent>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
+#include <QMessageBox>
+#include <QTimer>
 #include <QTreeWidget>
 #include <QVBoxLayout>
 
 #include "app/GameApp.h"
 #include "components/SceneComponent.h"
+#include "editor/EditorActorTransform.h"
 #include "world/Actor.h"
 #include "world/Level.h"
 
@@ -21,6 +28,61 @@ namespace
 {
 constexpr int kActorObjectIdRole = Qt::UserRole;
 constexpr uint64_t kWorldRootItemId = 0;
+
+class WorldContentTreeWidget final : public QTreeWidget
+{
+public:
+	explicit WorldContentTreeWidget(QWidget* InParent = nullptr)
+		: QTreeWidget(InParent)
+	{
+	}
+
+	std::function<bool(const QTreeWidgetItem*, const QTreeWidgetItem*)> CanDropPredicate;
+	std::function<void(uint64_t, uint64_t)> DropHandler;
+
+protected:
+	void startDrag(Qt::DropActions InSupportedActions) override
+	{
+		(void)InSupportedActions;
+		// Use CopyAction only so Qt does not remove the dragged item from the tree
+		// before we rebuild hierarchy from scene data.
+		QTreeWidget::startDrag(Qt::CopyAction);
+	}
+
+	void dragMoveEvent(QDragMoveEvent* InEvent) override
+	{
+		QTreeWidgetItem* DragItem = currentItem();
+		QTreeWidgetItem* DropItem = itemAt(InEvent->position().toPoint());
+		if (DragItem == nullptr || DropItem == nullptr || CanDropPredicate == nullptr
+			|| !CanDropPredicate(DragItem, DropItem))
+		{
+			InEvent->ignore();
+			return;
+		}
+
+		InEvent->acceptProposedAction();
+	}
+
+	void dropEvent(QDropEvent* InEvent) override
+	{
+		QTreeWidgetItem* DragItem = currentItem();
+		QTreeWidgetItem* DropItem = itemAt(InEvent->position().toPoint());
+		if (DragItem == nullptr || DropItem == nullptr || DropHandler == nullptr || CanDropPredicate == nullptr
+			|| !CanDropPredicate(DragItem, DropItem))
+		{
+			InEvent->ignore();
+			return;
+		}
+
+		const uint64_t ChildActorObjectId =
+			static_cast<uint64_t>(DragItem->data(0, kActorObjectIdRole).toULongLong());
+		const uint64_t NewParentActorObjectId =
+			static_cast<uint64_t>(DropItem->data(0, kActorObjectIdRole).toULongLong());
+		DropHandler(ChildActorObjectId, NewParentActorObjectId);
+		InEvent->setDropAction(Qt::CopyAction);
+		InEvent->accept();
+	}
+};
 } // namespace
 
 WorldContentPanelWidget::WorldContentPanelWidget(GameApp* InGameApp, QWidget* InParent)
@@ -41,7 +103,7 @@ void WorldContentPanelWidget::BuildUi()
 	m_search_edit_->setClearButtonEnabled(true);
 	ContentLayout->addWidget(m_search_edit_);
 
-	m_actor_tree_ = new QTreeWidget(Content);
+	m_actor_tree_ = new WorldContentTreeWidget(Content);
 	m_actor_tree_->setColumnCount(2);
 	m_actor_tree_->setHeaderLabels({tr("Item Label"), tr("Type")});
 	m_actor_tree_->setRootIsDecorated(true);
@@ -55,11 +117,32 @@ void WorldContentPanelWidget::BuildUi()
 	m_actor_tree_->header()->setSectionResizeMode(0, QHeaderView::Stretch);
 	m_actor_tree_->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
 	m_actor_tree_->header()->setMinimumSectionSize(72);
+	m_actor_tree_->setDragEnabled(true);
+	m_actor_tree_->setAcceptDrops(true);
+	m_actor_tree_->setDropIndicatorShown(true);
+	m_actor_tree_->setDragDropMode(QAbstractItemView::DragDrop);
+	m_actor_tree_->setDefaultDropAction(Qt::CopyAction);
+	m_actor_tree_->installEventFilter(this);
 	ContentLayout->addWidget(m_actor_tree_);
+
+	auto* ActorTree = static_cast<WorldContentTreeWidget*>(m_actor_tree_);
+	ActorTree->CanDropPredicate = [this](const QTreeWidgetItem* InDragItem, const QTreeWidgetItem* InDropItem)
+	{
+		return CanDropActorOnItem(InDragItem, InDropItem);
+	};
+	ActorTree->DropHandler = [this](uint64_t InChildActorObjectId, uint64_t InNewParentActorObjectId)
+	{
+		OnActorDropRequested(InChildActorObjectId, InNewParentActorObjectId);
+	};
 
 	m_status_label_ = new QLabel(tr("0 actors"), Content);
 	m_status_label_->setObjectName("SecondaryLabel");
 	ContentLayout->addWidget(m_status_label_);
+
+	m_rename_action_ = new QAction(tr("重命名"), this);
+	m_rename_action_->setShortcut(QKeySequence(Qt::Key_F2));
+	m_rename_action_->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+	addAction(m_rename_action_);
 
 	connect(m_search_edit_, &QLineEdit::textChanged, this, &WorldContentPanelWidget::OnSearchTextChanged);
 	connect(
@@ -69,11 +152,32 @@ void WorldContentPanelWidget::BuildUi()
 		&WorldContentPanelWidget::OnTreeItemClicked);
 	connect(
 		m_actor_tree_,
+		&QTreeWidget::itemChanged,
+		this,
+		&WorldContentPanelWidget::OnTreeItemChanged);
+	connect(
+		m_actor_tree_,
 		&QTreeWidget::customContextMenuRequested,
 		this,
 		&WorldContentPanelWidget::OnTreeContextMenuRequested);
+	connect(m_rename_action_, &QAction::triggered, this, &WorldContentPanelWidget::BeginRenameSelectedItem);
 
 	RefreshScrollContentGeometry();
+}
+
+bool WorldContentPanelWidget::eventFilter(QObject* InWatched, QEvent* InEvent)
+{
+	if (InWatched == m_actor_tree_ && InEvent->type() == QEvent::KeyPress)
+	{
+		auto* KeyEvent = static_cast<QKeyEvent*>(InEvent);
+		if (KeyEvent->key() == Qt::Key_F2)
+		{
+			BeginRenameSelectedItem();
+			return true;
+		}
+	}
+
+	return ScrollablePanelWidget::eventFilter(InWatched, InEvent);
 }
 
 void WorldContentPanelWidget::RefreshFromScene()
@@ -189,6 +293,87 @@ bool WorldContentPanelWidget::ActorMatchesFilter(const AActor* InActor) const
 		|| ClassName.contains(FilterText, Qt::CaseInsensitive);
 }
 
+bool WorldContentPanelWidget::CanRenameTreeItem(const QTreeWidgetItem* InItem) const
+{
+	if (InItem == nullptr)
+	{
+		return false;
+	}
+
+	const qulonglong ActorObjectId = InItem->data(0, kActorObjectIdRole).toULongLong();
+	return ActorObjectId != 0 && ActorObjectId != kWorldRootItemId;
+}
+
+bool WorldContentPanelWidget::CanDropActorOnItem(
+	const QTreeWidgetItem* InDragItem,
+	const QTreeWidgetItem* InDropItem) const
+{
+	if (InDragItem == nullptr || InDropItem == nullptr || InDragItem == InDropItem)
+	{
+		return false;
+	}
+
+	const uint64_t ChildActorObjectId =
+		static_cast<uint64_t>(InDragItem->data(0, kActorObjectIdRole).toULongLong());
+	if (ChildActorObjectId == 0 || ChildActorObjectId == kWorldRootItemId)
+	{
+		return false;
+	}
+
+	const uint64_t NewParentActorObjectId =
+		static_cast<uint64_t>(InDropItem->data(0, kActorObjectIdRole).toULongLong());
+	if (NewParentActorObjectId == ChildActorObjectId)
+	{
+		return false;
+	}
+
+	if (m_game_app_ == nullptr)
+	{
+		return false;
+	}
+
+	const ULevel* ActiveLevel = m_game_app_->GetActiveLevel();
+	if (ActiveLevel == nullptr)
+	{
+		return false;
+	}
+
+	const AActor* ChildActor = ActiveLevel->FindActor(ChildActorObjectId);
+	if (ChildActor == nullptr)
+	{
+		return false;
+	}
+
+	if (NewParentActorObjectId == 0 || NewParentActorObjectId == kWorldRootItemId)
+	{
+		return true;
+	}
+
+	const AActor* NewParentActor = ActiveLevel->FindActor(NewParentActorObjectId);
+	if (NewParentActor == nullptr)
+	{
+		return false;
+	}
+
+	return !FEditorActorTransform::WouldCreateAttachmentCycle(ChildActor, NewParentActor);
+}
+
+void WorldContentPanelWidget::BeginRenameSelectedItem()
+{
+	if (m_actor_tree_ == nullptr)
+	{
+		return;
+	}
+
+	QTreeWidgetItem* CurrentItem = m_actor_tree_->currentItem();
+	if (!CanRenameTreeItem(CurrentItem))
+	{
+		return;
+	}
+
+	m_actor_tree_->editItem(CurrentItem, 0);
+}
+
 void WorldContentPanelWidget::RebuildActorTree()
 {
 	if (m_actor_tree_ == nullptr || m_game_app_ == nullptr)
@@ -214,6 +399,7 @@ void WorldContentPanelWidget::RebuildActorTree()
 	WorldRootItem->setText(0, LevelLabel);
 	WorldRootItem->setText(1, tr("World"));
 	WorldRootItem->setData(0, kActorObjectIdRole, QVariant::fromValue<qulonglong>(kWorldRootItemId));
+	WorldRootItem->setFlags(WorldRootItem->flags() | Qt::ItemIsDropEnabled);
 	WorldRootItem->setExpanded(true);
 
 	std::unordered_map<uint64_t, const AActor*> ActorById;
@@ -292,6 +478,7 @@ void WorldContentPanelWidget::PopulateTreeItem(QTreeWidgetItem* InParentItem, co
 		0,
 		kActorObjectIdRole,
 		QVariant::fromValue<qulonglong>(static_cast<qulonglong>(InActor->GetObjectId())));
+	ActorItem->setFlags(ActorItem->flags() | Qt::ItemIsEditable | Qt::ItemIsDragEnabled | Qt::ItemIsDropEnabled);
 	ActorItem->setExpanded(true);
 
 	std::vector<const AActor*> ChildActors;
@@ -348,6 +535,44 @@ void WorldContentPanelWidget::OnTreeItemClicked(QTreeWidgetItem* InItem, int InC
 	SyncTreeSelection();
 }
 
+void WorldContentPanelWidget::OnTreeItemChanged(QTreeWidgetItem* InItem, int InColumn)
+{
+	(void)InColumn;
+	if (m_is_tree_refreshing_ || m_is_renaming_tree_item_ || m_game_app_ == nullptr || InItem == nullptr)
+	{
+		return;
+	}
+
+	if (!CanRenameTreeItem(InItem))
+	{
+		return;
+	}
+
+	const uint64_t ActorObjectId = static_cast<uint64_t>(InItem->data(0, kActorObjectIdRole).toULongLong());
+	const std::string NewName = InItem->text(0).trimmed().toStdString();
+	if (NewName.empty())
+	{
+		m_last_scene_revision_ = 0;
+		RebuildActorTree();
+		return;
+	}
+
+	std::string ErrorMessage;
+	if (!m_game_app_->RenameActor(ActorObjectId, NewName, &ErrorMessage))
+	{
+		QMessageBox::warning(
+			this,
+			tr("重命名失败"),
+			tr("无法重命名 Actor: %1").arg(QString::fromStdString(ErrorMessage)));
+		m_last_scene_revision_ = 0;
+		RebuildActorTree();
+		return;
+	}
+
+	m_last_scene_revision_ = 0;
+	RefreshFromScene();
+}
+
 void WorldContentPanelWidget::OnTreeContextMenuRequested(const QPoint& InPos)
 {
 	if (m_game_app_ == nullptr || m_actor_tree_ == nullptr)
@@ -370,14 +595,24 @@ void WorldContentPanelWidget::OnTreeContextMenuRequested(const QPoint& InPos)
 	}
 
 	QMenu ContextMenu(this);
+	QAction* RenameAction = ContextMenu.addAction(tr("重命名"));
+	RenameAction->setShortcut(QKeySequence(Qt::Key_F2));
+	RenameAction->setEnabled(CanRenameTreeItem(Item));
 	QAction* DeleteAction = ContextMenu.addAction(tr("删除"));
 	DeleteAction->setEnabled(m_game_app_->GetSelectedActorObjectId() != 0);
+	connect(
+		RenameAction,
+		&QAction::triggered,
+		this,
+		&WorldContentPanelWidget::BeginRenameSelectedItem);
 	connect(
 		DeleteAction,
 		&QAction::triggered,
 		this,
 		&WorldContentPanelWidget::OnDeleteSelectedActorRequested);
-	ContextMenu.exec(m_actor_tree_->viewport()->mapToGlobal(InPos));
+
+	QAction* ChosenAction = ContextMenu.exec(m_actor_tree_->viewport()->mapToGlobal(InPos));
+	(void)ChosenAction;
 }
 
 void WorldContentPanelWidget::OnDeleteSelectedActorRequested()
@@ -400,4 +635,44 @@ void WorldContentPanelWidget::OnSearchTextChanged(const QString& InText)
 	(void)InText;
 	m_last_scene_revision_ = 0;
 	RebuildActorTree();
+}
+
+void WorldContentPanelWidget::OnActorDropRequested(
+	uint64_t InChildActorObjectId,
+	uint64_t InNewParentActorObjectId)
+{
+	if (m_game_app_ == nullptr)
+	{
+		return;
+	}
+
+	std::string ErrorMessage;
+	if (!m_game_app_->ReparentActor(InChildActorObjectId, InNewParentActorObjectId, &ErrorMessage))
+	{
+		QMessageBox::warning(
+			this,
+			tr("设置父子级失败"),
+			tr("无法设置 Actor 父子级: %1").arg(QString::fromStdString(ErrorMessage)));
+		return;
+	}
+
+	if (m_game_app_ != nullptr)
+	{
+		m_last_scene_revision_ = m_game_app_->GetSceneRevision();
+	}
+	RebuildActorTree();
+
+	// Rebuild again on the next event-loop turn in case Qt post-processes the drag.
+	QTimer::singleShot(
+		0,
+		this,
+		[this]()
+		{
+			if (m_game_app_ == nullptr)
+			{
+				return;
+			}
+			m_last_scene_revision_ = m_game_app_->GetSceneRevision();
+			RebuildActorTree();
+		});
 }

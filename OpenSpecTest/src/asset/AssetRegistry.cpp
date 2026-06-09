@@ -1,5 +1,8 @@
 #include "asset/AssetRegistry.h"
 
+#include <algorithm>
+
+#include "asset/AssetRedirectStore.h"
 #include "asset/AssetSerializer.h"
 #include "asset/ProjectPaths.h"
 #include "asset/SoftObjectPath.h"
@@ -26,8 +29,8 @@ bool DeriveRegistryPathsFromUAssetFile(
 
 	std::filesystem::path AssetPathPath = RelativePath;
 	AssetPathPath.replace_extension("");
-	*OutAssetPath = AssetPathPath.generic_string();
-	*OutObjectName = AssetPathPath.filename().string();
+	*OutAssetPath = FsPathUtf8Generic(AssetPathPath);
+	*OutObjectName = FsPathComponentUtf8(AssetPathPath);
 	return !OutAssetPath->empty();
 }
 
@@ -59,6 +62,7 @@ FAssetRegistry& FAssetRegistry::Get()
 
 void FAssetRegistry::ScanContentDirectory()
 {
+	FAssetRedirectStore::Get().Load();
 	Entries_.clear();
 	if (!std::filesystem::exists(GProjectContentDirectory))
 	{
@@ -128,6 +132,22 @@ void FAssetRegistry::RegisterFromHeader(
 	BumpRevision();
 }
 
+void FAssetRegistry::RemoveByAssetPath(const std::string& InAssetPath)
+{
+	const auto It = std::remove_if(
+		Entries_.begin(),
+		Entries_.end(),
+		[&InAssetPath](const FAssetRegistryEntry& Entry)
+		{
+			return Entry.AssetPath == InAssetPath;
+		});
+	if (It != Entries_.end())
+	{
+		Entries_.erase(It, Entries_.end());
+		BumpRevision();
+	}
+}
+
 void FAssetRegistry::RegisterFromDisk(const std::filesystem::path& InUAssetPath)
 {
 	FAssetPackageHeader Header;
@@ -147,6 +167,23 @@ std::optional<FAssetRegistryEntry> FAssetRegistry::FindBySoftPath(const std::str
 	for (const FAssetRegistryEntry& Entry : Entries_)
 	{
 		if (Entry.AssetPath == SoftPath.AssetPath && Entry.ObjectName == SoftPath.ObjectName)
+		{
+			return Entry;
+		}
+	}
+	return std::nullopt;
+}
+
+std::optional<FAssetRegistryEntry> FAssetRegistry::FindByGuid(const std::string& InGuid) const
+{
+	if (InGuid.empty())
+	{
+		return std::nullopt;
+	}
+
+	for (const FAssetRegistryEntry& Entry : Entries_)
+	{
+		if (Entry.Guid == InGuid)
 		{
 			return Entry;
 		}

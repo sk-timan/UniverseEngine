@@ -15,6 +15,7 @@
 #include "math/Math.h"
 #include "editor/EditorActorBoundsDebug.h"
 #include "editor/EditorPicking.h"
+#include "editor/EditorActorTransform.h"
 #include "editor/EditorTransformGizmo.h"
 #include "editor/EditorViewMatrices.h"
 #include "asset/AssetRegistry.h"
@@ -57,6 +58,15 @@ constexpr float kCameraFocusBoundsPadding = 1.35f;
 constexpr float kCameraFocusMinDistance = 2.0f;
 constexpr float kCameraFocusDefaultBoundsRadius = 1.0f;
 constexpr float kCameraOrbitMouseSensitivity = 0.0025f;
+constexpr float kCameraDollyMouseSensitivity = 0.01f;
+constexpr float kCameraDollyMinDistance = 0.05f;
+constexpr float kCameraWheelDollyScale = 0.002f;
+
+bool IsAltKeyDown()
+{
+	return ((GetAsyncKeyState(VK_MENU) & 0x8000) != 0) ||
+		((GetAsyncKeyState(VK_RMENU) & 0x8000) != 0);
+}
 
 float ComputeTravelDistance(const DirectX::XMFLOAT3& InStart, const DirectX::XMFLOAT3& InEnd)
 {
@@ -167,11 +177,38 @@ bool ComputeCameraOrbitPivotAndRadius(
 	}
 
 	const FVector3 CameraPos(InCamera.position.x, InCamera.position.y, InCamera.position.z);
-	const float ArmLength = std::max((CameraPos - FocusCenter).Length(), 0.5f);
-	const FVector3 Forward = ComputeCameraForwardVector(InCamera);
-	*OutOrbitPivot = CameraPos + (Forward * ArmLength);
-	*OutOrbitRadius = ArmLength;
+	*OutOrbitPivot = FocusCenter;
+	*OutOrbitRadius = std::max((CameraPos - FocusCenter).Length(), kCameraDollyMinDistance);
 	return true;
+}
+
+void ApplyCameraDollyPosition(
+	Dx12Renderer::CameraState* InOutCamera,
+	const FVector3& InFocusPoint,
+	float InDistanceFromFocus)
+{
+	if (InOutCamera == nullptr)
+	{
+		return;
+	}
+
+	const FVector3 CameraPos(InOutCamera->position.x, InOutCamera->position.y, InOutCamera->position.z);
+	FVector3 OffsetFromFocus = CameraPos - InFocusPoint;
+	const float CurrentDistance = OffsetFromFocus.Length();
+	if (CurrentDistance > 1e-4f)
+	{
+		OffsetFromFocus = OffsetFromFocus * (InDistanceFromFocus / CurrentDistance);
+	}
+	else
+	{
+		const FVector3 Forward = ComputeCameraForwardVector(*InOutCamera);
+		OffsetFromFocus = Forward * InDistanceFromFocus;
+	}
+
+	const FVector3 DollyPosition = InFocusPoint + OffsetFromFocus;
+	InOutCamera->position.x = DollyPosition.X;
+	InOutCamera->position.y = DollyPosition.Y;
+	InOutCamera->position.z = DollyPosition.Z;
 }
 
 void ApplyCameraOrbitPosition(
@@ -410,6 +447,7 @@ void GameApp::OnFocusLost()
 	m_viewport_has_focus_ = false;
 	EndMouseLook(false);
 	EndCameraOrbit();
+	EndCameraDolly();
 	m_camera_velocity_.position = {0.0f, 0.0f, 0.0f};
 }
 
@@ -423,6 +461,30 @@ void GameApp::SetMouseLookActive(bool bIsActive, bool bRestoreCursor)
 	{
 		EndMouseLook(bRestoreCursor);
 	}
+}
+
+void GameApp::OnViewportMouseWheel(float InAngleDeltaY)
+{
+	if (!m_viewport_has_focus_ || m_b_camera_focus_active_ || m_b_camera_orbit_active_ || m_b_camera_dolly_active_)
+	{
+		return;
+	}
+	if (std::abs(InAngleDeltaY) < 0.001f)
+	{
+		return;
+	}
+
+	const bool bSprinting = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+	constexpr float kSprintSpeedMultiplier = 1.9f;
+	const float BaseMoveSpeed = m_camera_move_speed_ * m_camera_speed_scalar_;
+	const float MoveSpeed = bSprinting ? (BaseMoveSpeed * kSprintSpeedMultiplier) : BaseMoveSpeed;
+	const float DollyDistance = InAngleDeltaY * MoveSpeed * kCameraWheelDollyScale;
+	const FVector3 Forward = ComputeCameraForwardVector(m_camera_);
+
+	m_camera_.position.x += Forward.X * DollyDistance;
+	m_camera_.position.y += Forward.Y * DollyDistance;
+	m_camera_.position.z += Forward.Z * DollyDistance;
+	m_camera_velocity_.position = {0.0f, 0.0f, 0.0f};
 }
 
 float GameApp::GetCameraMoveSpeed() const
@@ -942,6 +1004,20 @@ bool GameApp::LoadModelToActiveLevel(
 	const FActorTransform& InActorTransform,
 	std::string* OutErrorMessage)
 {
+	std::string SoftPath;
+	if (!TryBuildSoftPathFromUAssetFile(InUAssetFilePath, &SoftPath, OutErrorMessage))
+	{
+		return false;
+	}
+
+	return LoadModelToActiveLevelFromSoftPath(SoftPath, InActorTransform, OutErrorMessage);
+}
+
+bool GameApp::LoadModelToActiveLevelFromSoftPath(
+	const std::string& InSoftObjectPath,
+	const FActorTransform& InActorTransform,
+	std::string* OutErrorMessage)
+{
 	if (OutErrorMessage != nullptr)
 	{
 		OutErrorMessage->clear();
@@ -965,14 +1041,8 @@ bool GameApp::LoadModelToActiveLevel(
 		return false;
 	}
 
-	std::string SoftPath;
-	if (!TryBuildSoftPathFromUAssetFile(InUAssetFilePath, &SoftPath, OutErrorMessage))
-	{
-		return false;
-	}
-
 	AActor* LoadedActor = nullptr;
-	if (!ActiveLevel->SpawnModelFromSoftPath(SoftPath, InActorTransform, &LoadedActor, OutErrorMessage))
+	if (!ActiveLevel->SpawnModelFromSoftPath(InSoftObjectPath, InActorTransform, &LoadedActor, OutErrorMessage))
 	{
 		return false;
 	}
@@ -1324,7 +1394,7 @@ void GameApp::UpdateInput(float DeltaSeconds)
 	{
 		return;
 	}
-	if (m_b_camera_focus_active_ || m_b_camera_orbit_active_)
+	if (m_b_camera_focus_active_ || m_b_camera_orbit_active_ || m_b_camera_dolly_active_)
 	{
 		m_camera_velocity_.position = {0.0f, 0.0f, 0.0f};
 		return;
@@ -1689,13 +1759,117 @@ bool GameApp::SetSelectedActorTransform(const FActorTransform& InTransform, bool
 		return false;
 	}
 
-	FActorTransform NormalizedTransform = InTransform;
-	NormalizedTransform.Rotation = NormalizedTransform.Rotation.GetNormalized();
-	SelectedActor->SetActorTransform(NormalizedTransform);
+	if (!FEditorActorTransform::SetEditableTransform(SelectedActor, InTransform))
+	{
+		return false;
+	}
+
 	if (bBumpSceneRevision)
 	{
 		BumpSceneRevision();
 	}
+	return true;
+}
+
+FActorTransform GameApp::GetSelectedActorEditableTransform() const
+{
+	return FEditorActorTransform::GetEditableTransform(GetSelectedActor());
+}
+
+bool GameApp::RenameActor(uint64_t InActorObjectId, const std::string& InNewName, std::string* OutErrorMessage)
+{
+	if (OutErrorMessage != nullptr)
+	{
+		*OutErrorMessage = "";
+	}
+
+	if (InNewName.empty())
+	{
+		if (OutErrorMessage != nullptr)
+		{
+			*OutErrorMessage = "Actor name is empty.";
+		}
+		return false;
+	}
+
+	ULevel* ActiveLevel = GetActiveLevel();
+	if (ActiveLevel == nullptr)
+	{
+		if (OutErrorMessage != nullptr)
+		{
+			*OutErrorMessage = "No active level.";
+		}
+		return false;
+	}
+
+	AActor* Actor = ActiveLevel->FindActor(InActorObjectId);
+	if (Actor == nullptr || Actor->IsPendingDestroy())
+	{
+		if (OutErrorMessage != nullptr)
+		{
+			*OutErrorMessage = "Actor not found.";
+		}
+		return false;
+	}
+
+	Actor->SetObjectName(InNewName);
+	BumpSceneRevision();
+	return true;
+}
+
+bool GameApp::ReparentActor(
+	uint64_t InChildActorObjectId,
+	uint64_t InNewParentActorObjectId,
+	std::string* OutErrorMessage)
+{
+	if (OutErrorMessage != nullptr)
+	{
+		*OutErrorMessage = "";
+	}
+
+	ULevel* ActiveLevel = GetActiveLevel();
+	if (ActiveLevel == nullptr)
+	{
+		if (OutErrorMessage != nullptr)
+		{
+			*OutErrorMessage = "No active level.";
+		}
+		return false;
+	}
+
+	AActor* ChildActor = ActiveLevel->FindActor(InChildActorObjectId);
+	if (ChildActor == nullptr || ChildActor->IsPendingDestroy())
+	{
+		if (OutErrorMessage != nullptr)
+		{
+			*OutErrorMessage = "Child actor not found.";
+		}
+		return false;
+	}
+
+	AActor* ParentActor = nullptr;
+	if (InNewParentActorObjectId != 0)
+	{
+		ParentActor = ActiveLevel->FindActor(InNewParentActorObjectId);
+		if (ParentActor == nullptr || ParentActor->IsPendingDestroy())
+		{
+			if (OutErrorMessage != nullptr)
+			{
+				*OutErrorMessage = "Parent actor not found.";
+			}
+			return false;
+		}
+	}
+
+	m_transform_gizmo_.EndDrag();
+
+	if (!FEditorActorTransform::ReparentActor(ChildActor, ParentActor, OutErrorMessage))
+	{
+		return false;
+	}
+
+	m_renderer_.InvalidateSceneRenderCache();
+	BumpSceneRevision();
 	return true;
 }
 
@@ -1709,6 +1883,36 @@ void GameApp::SetGizmoMode(EGizmoMode InMode)
 	m_gizmo_mode_ = InMode;
 	m_transform_gizmo_.SetMode(InMode);
 }
+
+namespace
+{
+constexpr float kDropSpawnGroundZ = 0.0f;
+constexpr float kDropSpawnFallbackDistance = 8.0f;
+
+bool RayIntersectHorizontalPlane(
+	const FWorldRay& InRay,
+	float InPlaneZ,
+	FVector3* OutHit)
+{
+	const float Denom = InRay.Direction.Z;
+	if (std::fabs(Denom) < 1e-5f)
+	{
+		return false;
+	}
+
+	const float T = (InPlaneZ - InRay.Origin.Z) / Denom;
+	if (T < 0.0f)
+	{
+		return false;
+	}
+
+	if (OutHit != nullptr)
+	{
+		*OutHit = InRay.Origin + (InRay.Direction * T);
+	}
+	return true;
+}
+} // namespace
 
 void GameApp::MapViewportMouseToPickScreen(int InX, int InY, float* OutPickX, float* OutPickY) const
 {
@@ -1775,6 +1979,55 @@ void GameApp::MapPickScreenToViewportWidget(float InPickScreenX, float InPickScr
 const FEditorRotateDragLabel& GameApp::GetRotateDragLabel() const
 {
 	return m_rotate_drag_label_;
+}
+
+bool GameApp::ComputeViewportDropSpawnPosition(int InPhysicalX, int InPhysicalY, FVector3* OutWorldPosition) const
+{
+	if (OutWorldPosition == nullptr)
+	{
+		return false;
+	}
+
+	UINT ViewportWidth = 1;
+	UINT ViewportHeight = 1;
+	GetViewportSize(&ViewportWidth, &ViewportHeight);
+	if (ViewportWidth == 0 || ViewportHeight == 0)
+	{
+		return false;
+	}
+
+	float PickScreenX = 0.0f;
+	float PickScreenY = 0.0f;
+	MapViewportMouseToPickScreen(InPhysicalX, InPhysicalY, &PickScreenX, &PickScreenY);
+
+	const float NearPlane = m_renderer_.GetNearClipPlane();
+	const float FarPlane = m_renderer_.GetFarClipPlane();
+	const FEditorViewportMatrices Matrices = FEditorViewMatrices::Build(
+		m_camera_,
+		ViewportWidth,
+		ViewportHeight,
+		NearPlane,
+		FarPlane);
+	const FWorldRay Ray = FEditorViewMatrices::BuildWorldRayFromScreen(
+		Matrices,
+		m_camera_.position,
+		PickScreenX,
+		PickScreenY,
+		ViewportWidth,
+		ViewportHeight,
+		NearPlane,
+		FarPlane);
+
+	if (RayIntersectHorizontalPlane(Ray, kDropSpawnGroundZ, OutWorldPosition))
+	{
+		return true;
+	}
+
+	const float FallbackDistance = std::max(
+		kDropSpawnFallbackDistance,
+		std::max(m_camera_.position.z, 1.0f));
+	*OutWorldPosition = Ray.Origin + (Ray.Direction * FallbackDistance);
+	return true;
 }
 
 void GameApp::GetViewportSize(UINT* OutWidth, UINT* OutHeight) const
@@ -1872,6 +2125,66 @@ void GameApp::EndCameraOrbit()
 
 	m_b_camera_orbit_active_ = false;
 	m_b_left_click_started_on_orbit_ = false;
+}
+
+void GameApp::BeginCameraDollyAroundFocus(int InMouseX, int InMouseY)
+{
+	const AActor* SelectedActor = GetSelectedActor();
+	if (SelectedActor == nullptr)
+	{
+		return;
+	}
+
+	if (!ComputeActorFocusCenter(SelectedActor, &m_camera_dolly_focus_))
+	{
+		return;
+	}
+
+	const FVector3 CameraPos(m_camera_.position.x, m_camera_.position.y, m_camera_.position.z);
+	m_camera_dolly_distance_ = std::max((CameraPos - m_camera_dolly_focus_).Length(), kCameraDollyMinDistance);
+
+	m_b_camera_focus_active_ = false;
+	m_camera_focus_elapsed_seconds_ = 0.0f;
+	m_camera_velocity_.position = {0.0f, 0.0f, 0.0f};
+	m_camera_dolly_last_mouse_x_ = InMouseX;
+	m_camera_dolly_last_mouse_y_ = InMouseY;
+	m_b_camera_dolly_active_ = true;
+
+	if (m_hwnd_ != nullptr)
+	{
+		SetCapture(m_hwnd_);
+	}
+}
+
+void GameApp::UpdateCameraDolly(int InMouseX, int InMouseY)
+{
+	if (!m_b_camera_dolly_active_)
+	{
+		return;
+	}
+
+	const float MouseDx = static_cast<float>(InMouseX - m_camera_dolly_last_mouse_x_);
+	const float MouseDy = static_cast<float>(InMouseY - m_camera_dolly_last_mouse_y_);
+	const float DollyDelta = -(MouseDx + MouseDy) * kCameraDollyMouseSensitivity * m_camera_dolly_distance_;
+	m_camera_dolly_distance_ = std::max(m_camera_dolly_distance_ + DollyDelta, kCameraDollyMinDistance);
+	ApplyCameraDollyPosition(&m_camera_, m_camera_dolly_focus_, m_camera_dolly_distance_);
+	m_camera_dolly_last_mouse_x_ = InMouseX;
+	m_camera_dolly_last_mouse_y_ = InMouseY;
+}
+
+void GameApp::EndCameraDolly()
+{
+	if (!m_b_camera_dolly_active_)
+	{
+		return;
+	}
+
+	if (m_hwnd_ != nullptr && GetCapture() == m_hwnd_)
+	{
+		ReleaseCapture();
+	}
+
+	m_b_camera_dolly_active_ = false;
 }
 
 void GameApp::BeginFocusOnSelectedActor()
@@ -2007,7 +2320,7 @@ void GameApp::TickEditorInteraction(float DeltaSeconds)
 	{
 		if (m_transform_gizmo_.IsDragging())
 		{
-			const FActorTransform OldTransform = SelectedActor->GetActorTransform();
+			const FActorTransform OldTransform = FEditorActorTransform::GetEditableTransform(SelectedActor);
 			FActorTransform DragTransform;
 			m_transform_gizmo_.UpdateDrag(
 				SelectedActor,
@@ -2026,9 +2339,7 @@ void GameApp::TickEditorInteraction(float DeltaSeconds)
 
 			if (bTransformChanged)
 			{
-				FActorTransform NormalizedTransform = DragTransform;
-				NormalizedTransform.Rotation = NormalizedTransform.Rotation.GetNormalized();
-				SelectedActor->SetActorTransform(NormalizedTransform);
+				FEditorActorTransform::SetEditableTransform(SelectedActor, DragTransform);
 			}
 		}
 	}
@@ -2157,10 +2468,7 @@ void GameApp::OnViewportLeftMousePress(int InX, int InY)
 	m_b_left_click_started_on_orbit_ = false;
 
 	AActor* SelectedActor = GetSelectedActor();
-	const bool bIsAltDown =
-		((GetAsyncKeyState(VK_MENU) & 0x8000) != 0) ||
-		((GetAsyncKeyState(VK_RMENU) & 0x8000) != 0);
-	if (bIsAltDown && SelectedActor != nullptr)
+	if (IsAltKeyDown() && SelectedActor != nullptr)
 	{
 		m_b_left_click_started_on_orbit_ = true;
 		BeginCameraOrbitAroundSelection(InX, InY);
@@ -2246,6 +2554,31 @@ void GameApp::OnViewportLeftMouseMove(int InX, int InY)
 	}
 	m_viewport_mouse_x_ = InX;
 	m_viewport_mouse_y_ = InY;
+}
+
+void GameApp::OnViewportRightMousePress(int InX, int InY)
+{
+	if (!IsAltKeyDown())
+	{
+		return;
+	}
+
+	BeginCameraDollyAroundFocus(InX, InY);
+}
+
+void GameApp::OnViewportRightMouseMove(int InX, int InY)
+{
+	if (m_b_camera_dolly_active_)
+	{
+		UpdateCameraDolly(InX, InY);
+	}
+}
+
+void GameApp::OnViewportRightMouseRelease(int InX, int InY)
+{
+	(void)InX;
+	(void)InY;
+	EndCameraDolly();
 }
 
 void GameApp::OnViewportLeftMouseRelease(int InX, int InY)

@@ -46,6 +46,7 @@ struct FComponentSaveData
 	FVector3 RelativeScale{1.0f, 1.0f, 1.0f};
 	std::string MeshAssetId;
 	std::string MeshAssetPath;
+	std::string MeshAssetGuid;
 	std::vector<FMaterialOverrideSaveData> MaterialOverrides;
 	int ForcedLODLevel = 0;
 	bool bVisible = true;
@@ -66,6 +67,7 @@ inline void to_json(nlohmann::json& OutJson, const FComponentSaveData& InData)
 		{"relative_scale", InData.RelativeScale},
 		{"mesh_asset_id", InData.MeshAssetId},
 		{"mesh_asset_path", InData.MeshAssetPath.empty() ? InData.MeshAssetId : InData.MeshAssetPath},
+		{"mesh_asset_guid", InData.MeshAssetGuid},
 		{"material_overrides", InData.MaterialOverrides},
 		{"forced_lod_level", InData.ForcedLODLevel},
 		{"visible", InData.bVisible}
@@ -126,6 +128,10 @@ inline void from_json(const nlohmann::json& InJson, FComponentSaveData& OutData)
 	{
 		OutData.MeshAssetPath = OutData.MeshAssetId;
 	}
+	if (InJson.contains("mesh_asset_guid"))
+	{
+		InJson.at("mesh_asset_guid").get_to(OutData.MeshAssetGuid);
+	}
 	if (InJson.contains("material_overrides"))
 	{
 		InJson.at("material_overrides").get_to(OutData.MaterialOverrides);
@@ -148,6 +154,7 @@ struct FActorSaveData
 	FVector3 Position;
 	FVector3 Rotation;
 	FVector3 Scale;
+	std::string AttachParentActorName;
 	std::vector<FComponentSaveData> Components;
 };
 
@@ -160,6 +167,7 @@ inline void to_json(nlohmann::json& OutJson, const FActorSaveData& InData)
 		{"position", InData.Position},
 		{"rotation", InData.Rotation},
 		{"scale", InData.Scale},
+		{"attach_parent_actor_name", InData.AttachParentActorName},
 		{"components", InData.Components}
 	};
 }
@@ -189,6 +197,10 @@ inline void from_json(const nlohmann::json& InJson, FActorSaveData& OutData)
 	if (InJson.contains("scale"))
 	{
 		InJson.at("scale").get_to(OutData.Scale);
+	}
+	if (InJson.contains("attach_parent_actor_name"))
+	{
+		InJson.at("attach_parent_actor_name").get_to(OutData.AttachParentActorName);
 	}
 	if (InJson.contains("components"))
 	{

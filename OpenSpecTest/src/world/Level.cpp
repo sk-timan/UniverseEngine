@@ -13,6 +13,7 @@
 #include "components/MeshComponent.h"
 #include "core/ObjectRegistry.h"
 #include "asset/AssetManager.h"
+#include "asset/AssetReferenceResolver.h"
 #include "asset/MeshImportFactory.h"
 #include "data/MeshImporter.h"
 #include "asset/ProjectPaths.h"
@@ -22,6 +23,7 @@
 #include "render/asset/SkeletalMesh.h"
 #include "render/asset/StreamableRenderAsset.h"
 #include "render/asset/StaticMesh.h"
+#include "editor/EditorActorTransform.h"
 #include "serialization/ComponentSerializer.h"
 #include "world/World.h"
 #include "world/StaticMeshActor.h"
@@ -600,6 +602,11 @@ FLevelSaveData ULevel::GetSaveData() const
 			ActorTransform.Rotation.Roll};
 		ActorData.Scale = ActorTransform.Scale;
 
+		if (const AActor* AttachParentActor = FEditorActorTransform::GetAttachParentActor(Actor))
+		{
+			ActorData.AttachParentActorName = AttachParentActor->GetObjectName();
+		}
+
 		for (const UActorComponent* Component : Actor->GetComponents())
 		{
 			if (Component == nullptr)
@@ -710,6 +717,7 @@ bool ULevel::LoadFromFile(const std::filesystem::path& InFilePath, std::string* 
 			(void)DestroyActor(*It);
 		}
 
+		std::vector<std::pair<AActor*, std::string>> PendingActorAttachments;
 		for (const FActorSaveData& ActorData : SaveData.Actors)
 		{
 			FActorSpawnParams Params;
@@ -781,6 +789,45 @@ bool ULevel::LoadFromFile(const std::filesystem::path& InFilePath, std::string* 
 			}
 
 			Actor->ApplyActorTransformToRoot();
+
+			if (!ActorData.AttachParentActorName.empty())
+			{
+				PendingActorAttachments.emplace_back(Actor, ActorData.AttachParentActorName);
+			}
+		}
+
+		std::unordered_map<std::string, AActor*> ActorsByName;
+		for (const uint64_t ActorObjectId : ActorObjectIds_)
+		{
+			AActor* LoadedActor = FindActor(ActorObjectId);
+			if (LoadedActor != nullptr && !LoadedActor->IsPendingDestroy())
+			{
+				ActorsByName.emplace(LoadedActor->GetObjectName(), LoadedActor);
+			}
+		}
+
+		for (const std::pair<AActor*, std::string>& PendingActorAttachment : PendingActorAttachments)
+		{
+			AActor* ChildActor = PendingActorAttachment.first;
+			const auto ParentIt = ActorsByName.find(PendingActorAttachment.second);
+			if (ChildActor == nullptr || ParentIt == ActorsByName.end() || ParentIt->second == nullptr)
+			{
+				continue;
+			}
+
+			USceneComponent* ChildRoot = ChildActor->GetRootComponent();
+			USceneComponent* ParentRoot = ParentIt->second->GetRootComponent();
+			if (ChildRoot == nullptr || ParentRoot == nullptr)
+			{
+				continue;
+			}
+
+			if (ChildRoot->GetAttachParent() != nullptr)
+			{
+				ChildRoot->DetachFromComponent();
+			}
+			ChildRoot->AttachToComponent(ParentRoot);
+			ChildActor->ApplyActorTransformToRoot();
 		}
 
 		return true;
@@ -827,18 +874,38 @@ UStaticMeshComponent* ULevel::ResolveStaticMeshComponentAsset(UActorComponent* I
 	}
 
 	const std::string& MeshReference = StaticMeshComponent->GetMeshAssetId();
-	if (MeshReference.empty())
+	const std::string& MeshGuid = StaticMeshComponent->GetMeshAssetGuid();
+	if (MeshReference.empty() && MeshGuid.empty())
 	{
 		return StaticMeshComponent;
 	}
 
-	UStaticMesh* StaticMesh = dynamic_cast<UStaticMesh*>(UAssetManager::Get().GetOrLoad(MeshReference, OutErrorMessage));
+	const FResolvedAssetReference ResolvedReference =
+		FAssetReferenceResolver::Resolve(MeshGuid, MeshReference);
+	const std::string EffectiveSoftPath = ResolvedReference.SoftObjectPath.empty()
+		? MeshReference
+		: ResolvedReference.SoftObjectPath;
+	if (EffectiveSoftPath.empty())
+	{
+		return StaticMeshComponent;
+	}
+
+	UStaticMesh* StaticMesh =
+		dynamic_cast<UStaticMesh*>(UAssetManager::Get().GetOrLoad(EffectiveSoftPath, OutErrorMessage));
 	if (StaticMesh == nullptr)
 	{
 		return StaticMeshComponent;
 	}
 
 	StaticMeshComponent->SetStaticMesh(StaticMesh);
+	if (!ResolvedReference.SoftObjectPath.empty())
+	{
+		if (!ResolvedReference.Guid.empty())
+		{
+			StaticMeshComponent->SetMeshAssetGuid(ResolvedReference.Guid);
+		}
+		StaticMeshComponent->SetMeshAssetId(ResolvedReference.SoftObjectPath);
+	}
 	return StaticMeshComponent;
 }
 
@@ -856,17 +923,37 @@ USkeletalMeshComponent* ULevel::ResolveSkeletalMeshComponentAsset(UActorComponen
 	}
 
 	const std::string& MeshReference = SkeletalMeshComponent->GetMeshAssetId();
-	if (MeshReference.empty())
+	const std::string& MeshGuid = SkeletalMeshComponent->GetMeshAssetGuid();
+	if (MeshReference.empty() && MeshGuid.empty())
 	{
 		return SkeletalMeshComponent;
 	}
 
-	USkeletalMesh* SkeletalMesh = dynamic_cast<USkeletalMesh*>(UAssetManager::Get().GetOrLoad(MeshReference, OutErrorMessage));
+	const FResolvedAssetReference ResolvedReference =
+		FAssetReferenceResolver::Resolve(MeshGuid, MeshReference);
+	const std::string EffectiveSoftPath = ResolvedReference.SoftObjectPath.empty()
+		? MeshReference
+		: ResolvedReference.SoftObjectPath;
+	if (EffectiveSoftPath.empty())
+	{
+		return SkeletalMeshComponent;
+	}
+
+	USkeletalMesh* SkeletalMesh =
+		dynamic_cast<USkeletalMesh*>(UAssetManager::Get().GetOrLoad(EffectiveSoftPath, OutErrorMessage));
 	if (SkeletalMesh == nullptr)
 	{
 		return SkeletalMeshComponent;
 	}
 
 	SkeletalMeshComponent->SetSkeletalMesh(SkeletalMesh);
+	if (!ResolvedReference.SoftObjectPath.empty())
+	{
+		if (!ResolvedReference.Guid.empty())
+		{
+			SkeletalMeshComponent->SetMeshAssetGuid(ResolvedReference.Guid);
+		}
+		SkeletalMeshComponent->SetMeshAssetId(ResolvedReference.SoftObjectPath);
+	}
 	return SkeletalMeshComponent;
 }
