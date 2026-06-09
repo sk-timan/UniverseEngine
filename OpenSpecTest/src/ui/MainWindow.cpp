@@ -8,6 +8,7 @@
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
 #include <QDropEvent>
+#include <QEvent>
 #include <QMimeData>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
@@ -34,9 +35,9 @@
 #include <QVBoxLayout>
 #include <QWidget>
 
+#include <cstring>
 #include <filesystem>
 #include <functional>
-#include <cstring>
 
 #include "app/GameApp.h"
 #include "ui/CameraSpeedControlWidget.h"
@@ -257,35 +258,72 @@ void RenderViewportWidget::dropEvent(QDropEvent* InEvent)
 		return;
 	}
 
-	const std::string SoftPath = QString::fromUtf8(MimeData->data(kSoftObjectPathMimeType)).toStdString();
-	const std::optional<FAssetRegistryEntry> RegistryEntry = FAssetRegistry::Get().FindBySoftPath(SoftPath);
-	if (!RegistryEntry.has_value() || !AssetTypeInfo::IsMeshAssetType(RegistryEntry->Type))
+	const std::vector<std::string> SoftPaths = ExtractSoftObjectPathsFromMimeData(MimeData);
+	if (SoftPaths.empty())
 	{
-		QMessageBox::information(
-			window(),
-			tr("拖放失败"),
-			tr("该资产类型不支持拖放到视口。"));
 		InEvent->ignore();
 		return;
 	}
 
-	FActorTransform SpawnTransform = FActorTransform::Identity();
+	FVector3 BaseSpawnPosition{};
 	const QPoint PhysicalPos = MapViewportMouseToPhysical(this, InEvent->position());
-	FVector3 SpawnPosition{};
-	if (m_game_app_->ComputeViewportDropSpawnPosition(PhysicalPos.x(), PhysicalPos.y(), &SpawnPosition))
+	if (!m_game_app_->ComputeViewportDropSpawnPosition(PhysicalPos.x(), PhysicalPos.y(), &BaseSpawnPosition))
 	{
-		SpawnTransform.Position = SpawnPosition;
+		BaseSpawnPosition = FVector3{};
 	}
 
-	std::string ErrorMessage;
-	if (!m_game_app_->LoadModelToActiveLevelFromSoftPath(SoftPath, SpawnTransform, &ErrorMessage))
+	constexpr float kMultiSpawnOffsetStep = 100.0f;
+	QStringList FailedMessages;
+	int SuccessCount = 0;
+	int SpawnIndex = 0;
+	for (const std::string& SoftPath : SoftPaths)
+	{
+		const std::optional<FAssetRegistryEntry> RegistryEntry = FAssetRegistry::Get().FindBySoftPath(SoftPath);
+		if (!RegistryEntry.has_value() || !AssetTypeInfo::IsMeshAssetType(RegistryEntry->Type))
+		{
+			FailedMessages.push_back(
+				tr("%1: 该资产类型不支持拖放到视口。").arg(QString::fromStdString(SoftPath)));
+			continue;
+		}
+
+		FActorTransform SpawnTransform = FActorTransform::Identity();
+		SpawnTransform.Position = BaseSpawnPosition;
+		SpawnTransform.Position.X += kMultiSpawnOffsetStep * static_cast<float>(SpawnIndex);
+
+		std::string ErrorMessage;
+		if (!m_game_app_->LoadModelToActiveLevelFromSoftPath(SoftPath, SpawnTransform, &ErrorMessage))
+		{
+			FailedMessages.push_back(
+				tr("%1: %2")
+					.arg(QString::fromStdString(RegistryEntry->ObjectName))
+					.arg(QString::fromStdString(ErrorMessage)));
+			continue;
+		}
+
+		++SuccessCount;
+		++SpawnIndex;
+	}
+
+	if (SuccessCount == 0)
 	{
 		QMessageBox::warning(
 			window(),
 			tr("拖放失败"),
-			tr("无法生成 Actor: %1").arg(QString::fromStdString(ErrorMessage)));
+			FailedMessages.isEmpty()
+				? tr("无法生成 Actor。")
+				: tr("无法生成 Actor:\n%1").arg(FailedMessages.join('\n')));
 		InEvent->ignore();
 		return;
+	}
+
+	if (!FailedMessages.isEmpty())
+	{
+		QMessageBox::warning(
+			window(),
+			tr("部分拖放失败"),
+			tr("已生成 %1 个 Actor，以下资产失败:\n%2")
+				.arg(SuccessCount)
+				.arg(FailedMessages.join('\n')));
 	}
 
 	InEvent->acceptProposedAction();
@@ -426,6 +464,11 @@ void RenderViewportWidget::FlushPendingResizeIfStable()
 	m_has_pending_resize_ = false;
 }
 
+MainWindow::~MainWindow()
+{
+	qApp->removeEventFilter(this);
+}
+
 MainWindow::MainWindow(GameApp* InGameApp)
 	: m_game_app_(InGameApp)
 {
@@ -446,6 +489,7 @@ MainWindow::MainWindow(GameApp* InGameApp)
 	BuildAssetBrowserPanel();
 	ConfigureDockLayout();
 	SyncViewportCameraSpeedControl();
+	qApp->installEventFilter(this);
 
 	QAction* DeleteSelectedActorAction = new QAction(this);
 	DeleteSelectedActorAction->setShortcut(QKeySequence::Delete);
@@ -1299,6 +1343,35 @@ void MainWindow::OnExitClicked()
 	close();
 }
 
+bool MainWindow::eventFilter(QObject* InWatched, QEvent* InEvent)
+{
+	if (InEvent->type() == QEvent::MouseButtonPress && m_asset_browser_panel_ != nullptr)
+	{
+		auto* MouseEvent = static_cast<QMouseEvent*>(InEvent);
+		if (MouseEvent->button() == Qt::LeftButton || MouseEvent->button() == Qt::RightButton)
+		{
+			QWidget* ClickedWidget = qobject_cast<QWidget*>(InWatched);
+			if (ClickedWidget != nullptr)
+			{
+				if (m_asset_browser_panel_->ContainsFolderTreeWidget(ClickedWidget))
+				{
+					m_asset_browser_panel_->ClearAssetGridSelection();
+				}
+				else if (m_asset_browser_panel_->ContainsItemGridWidget(ClickedWidget))
+				{
+					m_asset_browser_panel_->ClearFolderTreeMultiSelection();
+				}
+				else
+				{
+					m_asset_browser_panel_->ClearAllSelections();
+				}
+			}
+		}
+	}
+
+	return QMainWindow::eventFilter(InWatched, InEvent);
+}
+
 void MainWindow::OnDeleteSelectedActorTriggered()
 {
 	if (m_game_app_ == nullptr)
@@ -1316,7 +1389,13 @@ void MainWindow::OnDeleteSelectedActorTriggered()
 		}
 	}
 
-	if (m_game_app_->DeleteSelectedActor())
+	if (m_asset_browser_panel_ != nullptr && m_asset_browser_panel_->TryHandleDeleteShortcut())
+	{
+		return;
+	}
+
+	const bool bDeletedActor = m_game_app_->DeleteSelectedActor();
+	if (bDeletedActor)
 	{
 		RefreshScenePanels();
 	}

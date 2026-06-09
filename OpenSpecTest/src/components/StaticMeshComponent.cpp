@@ -38,6 +38,12 @@ UStaticMesh* UStaticMeshComponent::GetStaticMesh() const
 	return StaticMesh_;
 }
 
+void UStaticMeshComponent::ClearLoadedMesh()
+{
+	StaticMesh_ = nullptr;
+	UMeshComponent::ClearLoadedMesh();
+}
+
 void UStaticMeshComponent::CreateRenderState(FPrimitiveRenderState* OutRenderState)
 {
 	UMeshComponent::CreateRenderState(OutRenderState);

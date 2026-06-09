@@ -860,6 +860,62 @@ void ULevel::SetGameplayConfig(const GameplayConfig& InConfig)
 	GameplayConfig_ = InConfig;
 }
 
+void ULevel::UnloadMeshAssetReferences(const std::string& InSoftObjectPath)
+{
+	if (InSoftObjectPath.empty())
+	{
+		return;
+	}
+
+	for (const uint64_t ActorObjectId : ActorObjectIds_)
+	{
+		AActor* Actor = FindActor(ActorObjectId);
+		if (Actor == nullptr)
+		{
+			continue;
+		}
+
+		for (UActorComponent* Component : Actor->GetComponents())
+		{
+			if (Component == nullptr || !Component->IsA(UMeshComponent::StaticClass()))
+			{
+				continue;
+			}
+
+			UMeshComponent* MeshComponent = static_cast<UMeshComponent*>(Component);
+			const std::string& MeshReference = MeshComponent->GetMeshAssetId();
+			const std::string& MeshGuid = MeshComponent->GetMeshAssetGuid();
+			if (MeshReference.empty() && MeshGuid.empty())
+			{
+				continue;
+			}
+
+			const FResolvedAssetReference ResolvedReference =
+				FAssetReferenceResolver::Resolve(MeshGuid, MeshReference);
+			const std::string EffectiveSoftPath = ResolvedReference.SoftObjectPath.empty()
+				? MeshReference
+				: ResolvedReference.SoftObjectPath;
+			if (EffectiveSoftPath != InSoftObjectPath && MeshReference != InSoftObjectPath)
+			{
+				continue;
+			}
+
+			if (Component->IsA(UStaticMeshComponent::StaticClass()))
+			{
+				static_cast<UStaticMeshComponent*>(Component)->ClearLoadedMesh();
+			}
+			else if (Component->IsA(USkeletalMeshComponent::StaticClass()))
+			{
+				static_cast<USkeletalMeshComponent*>(Component)->ClearLoadedMesh();
+			}
+			else
+			{
+				MeshComponent->ClearLoadedMesh();
+			}
+		}
+	}
+}
+
 UStaticMeshComponent* ULevel::ResolveStaticMeshComponentAsset(UActorComponent* InComponent, std::string* OutErrorMessage)
 {
 	if (InComponent == nullptr || !InComponent->IsA(UStaticMeshComponent::StaticClass()))

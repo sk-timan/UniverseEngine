@@ -59,14 +59,8 @@ constexpr float kCameraFocusMinDistance = 2.0f;
 constexpr float kCameraFocusDefaultBoundsRadius = 1.0f;
 constexpr float kCameraOrbitMouseSensitivity = 0.0025f;
 constexpr float kCameraDollyMouseSensitivity = 0.01f;
-constexpr float kCameraDollyMinDistance = 0.05f;
+constexpr float kCameraDollyMinRadius = 0.05f;
 constexpr float kCameraWheelDollyScale = 0.002f;
-
-bool IsAltKeyDown()
-{
-	return ((GetAsyncKeyState(VK_MENU) & 0x8000) != 0) ||
-		((GetAsyncKeyState(VK_RMENU) & 0x8000) != 0);
-}
 
 float ComputeTravelDistance(const DirectX::XMFLOAT3& InStart, const DirectX::XMFLOAT3& InEnd)
 {
@@ -177,38 +171,11 @@ bool ComputeCameraOrbitPivotAndRadius(
 	}
 
 	const FVector3 CameraPos(InCamera.position.x, InCamera.position.y, InCamera.position.z);
-	*OutOrbitPivot = FocusCenter;
-	*OutOrbitRadius = std::max((CameraPos - FocusCenter).Length(), kCameraDollyMinDistance);
+	const float ArmLength = std::max((CameraPos - FocusCenter).Length(), 0.5f);
+	const FVector3 Forward = ComputeCameraForwardVector(InCamera);
+	*OutOrbitPivot = CameraPos + (Forward * ArmLength);
+	*OutOrbitRadius = ArmLength;
 	return true;
-}
-
-void ApplyCameraDollyPosition(
-	Dx12Renderer::CameraState* InOutCamera,
-	const FVector3& InFocusPoint,
-	float InDistanceFromFocus)
-{
-	if (InOutCamera == nullptr)
-	{
-		return;
-	}
-
-	const FVector3 CameraPos(InOutCamera->position.x, InOutCamera->position.y, InOutCamera->position.z);
-	FVector3 OffsetFromFocus = CameraPos - InFocusPoint;
-	const float CurrentDistance = OffsetFromFocus.Length();
-	if (CurrentDistance > 1e-4f)
-	{
-		OffsetFromFocus = OffsetFromFocus * (InDistanceFromFocus / CurrentDistance);
-	}
-	else
-	{
-		const FVector3 Forward = ComputeCameraForwardVector(*InOutCamera);
-		OffsetFromFocus = Forward * InDistanceFromFocus;
-	}
-
-	const FVector3 DollyPosition = InFocusPoint + OffsetFromFocus;
-	InOutCamera->position.x = DollyPosition.X;
-	InOutCamera->position.y = DollyPosition.Y;
-	InOutCamera->position.z = DollyPosition.Z;
 }
 
 void ApplyCameraOrbitPosition(
@@ -447,7 +414,7 @@ void GameApp::OnFocusLost()
 	m_viewport_has_focus_ = false;
 	EndMouseLook(false);
 	EndCameraOrbit();
-	EndCameraDolly();
+	EndCameraDollyAlongTargetAxis();
 	m_camera_velocity_.position = {0.0f, 0.0f, 0.0f};
 }
 
@@ -736,7 +703,8 @@ bool GameApp::LoadMapById(const std::string& InMapId, std::string* OutErrorMessa
 
 	SyncRendererLevelInput();
 	BumpSceneRevision();
-	m_selected_actor_object_id_ = 0;
+	m_selected_actor_object_ids_.clear();
+	m_primary_selected_actor_object_id_ = 0;
 	return true;
 }
 
@@ -900,7 +868,8 @@ bool GameApp::LoadLevelFromFile(const std::filesystem::path& InFilePath, std::st
 	}
 
 	BumpSceneRevision();
-	m_selected_actor_object_id_ = 0;
+	m_selected_actor_object_ids_.clear();
+	m_primary_selected_actor_object_id_ = 0;
 	RefreshActiveLevelRender();
 	return true;
 }
@@ -1674,53 +1643,110 @@ uint32_t GameApp::GetSceneRevision() const
 
 uint64_t GameApp::GetSelectedActorObjectId() const
 {
-	return m_selected_actor_object_id_;
+	return m_primary_selected_actor_object_id_;
+}
+
+std::vector<uint64_t> GameApp::GetSelectedActorObjectIds() const
+{
+	return m_selected_actor_object_ids_;
+}
+
+size_t GameApp::GetSelectedActorCount() const
+{
+	return m_selected_actor_object_ids_.size();
 }
 
 AActor* GameApp::GetSelectedActor()
 {
 	ULevel* ActiveLevel = GetActiveLevel();
-	if (ActiveLevel == nullptr || m_selected_actor_object_id_ == 0)
+	if (ActiveLevel == nullptr || m_primary_selected_actor_object_id_ == 0)
 	{
 		return nullptr;
 	}
-	return ActiveLevel->FindActor(m_selected_actor_object_id_);
+	return ActiveLevel->FindActor(m_primary_selected_actor_object_id_);
 }
 
 const AActor* GameApp::GetSelectedActor() const
 {
 	const ULevel* ActiveLevel = GetActiveLevel();
-	if (ActiveLevel == nullptr || m_selected_actor_object_id_ == 0)
+	if (ActiveLevel == nullptr || m_primary_selected_actor_object_id_ == 0)
 	{
 		return nullptr;
 	}
-	return ActiveLevel->FindActor(m_selected_actor_object_id_);
+	return ActiveLevel->FindActor(m_primary_selected_actor_object_id_);
 }
 
-void GameApp::SelectActor(uint64_t InActorObjectId)
+void GameApp::SetActorSelection(
+	const std::vector<uint64_t>& InActorObjectIds,
+	uint64_t InPrimaryActorObjectId)
 {
-	uint64_t ResolvedActorObjectId = InActorObjectId;
-	if (InActorObjectId != 0)
+	const ULevel* ActiveLevel = GetActiveLevel();
+
+	std::vector<uint64_t> ResolvedActorObjectIds;
+	ResolvedActorObjectIds.reserve(InActorObjectIds.size());
+	for (uint64_t ActorObjectId : InActorObjectIds)
 	{
-		const ULevel* ActiveLevel = GetActiveLevel();
-		if (ActiveLevel == nullptr || ActiveLevel->FindActor(InActorObjectId) == nullptr)
+		if (ActorObjectId == 0)
 		{
-			ResolvedActorObjectId = 0;
+			continue;
+		}
+
+		if (ActiveLevel == nullptr || ActiveLevel->FindActor(ActorObjectId) == nullptr)
+		{
+			continue;
+		}
+
+		if (std::find(
+			ResolvedActorObjectIds.begin(),
+			ResolvedActorObjectIds.end(),
+			ActorObjectId) == ResolvedActorObjectIds.end())
+		{
+			ResolvedActorObjectIds.push_back(ActorObjectId);
 		}
 	}
 
-	if (m_selected_actor_object_id_ == ResolvedActorObjectId)
+	uint64_t ResolvedPrimaryActorObjectId = 0;
+	if (InPrimaryActorObjectId != 0
+		&& ActiveLevel != nullptr
+		&& ActiveLevel->FindActor(InPrimaryActorObjectId) != nullptr
+		&& std::find(
+			ResolvedActorObjectIds.begin(),
+			ResolvedActorObjectIds.end(),
+			InPrimaryActorObjectId) != ResolvedActorObjectIds.end())
+	{
+		ResolvedPrimaryActorObjectId = InPrimaryActorObjectId;
+	}
+	else if (!ResolvedActorObjectIds.empty())
+	{
+		ResolvedPrimaryActorObjectId = ResolvedActorObjectIds.back();
+	}
+
+	if (ResolvedActorObjectIds == m_selected_actor_object_ids_
+		&& ResolvedPrimaryActorObjectId == m_primary_selected_actor_object_id_)
 	{
 		return;
 	}
 
-	m_selected_actor_object_id_ = ResolvedActorObjectId;
+	m_transform_gizmo_.EndDrag();
+	ClearMultiSelectDragSnapshot();
+	m_selected_actor_object_ids_ = std::move(ResolvedActorObjectIds);
+	m_primary_selected_actor_object_id_ = ResolvedPrimaryActorObjectId;
+}
+
+void GameApp::SelectActor(uint64_t InActorObjectId)
+{
+	if (InActorObjectId == 0)
+	{
+		SetActorSelection({}, 0);
+		return;
+	}
+
+	SetActorSelection({InActorObjectId}, InActorObjectId);
 }
 
 bool GameApp::DeleteSelectedActor()
 {
-	const uint64_t ActorObjectId = m_selected_actor_object_id_;
-	if (ActorObjectId == 0)
+	if (m_selected_actor_object_ids_.empty())
 	{
 		return false;
 	}
@@ -1732,16 +1758,28 @@ bool GameApp::DeleteSelectedActor()
 	}
 
 	m_transform_gizmo_.EndDrag();
+	ClearMultiSelectDragSnapshot();
 	m_is_left_mouse_down_ = false;
 	m_b_left_mouse_moved_since_press_ = false;
 	m_b_left_click_started_on_gizmo_ = false;
 
-	if (!ActiveLevel->DestroyActor(ActorObjectId))
+	const std::vector<uint64_t> ActorObjectIds = m_selected_actor_object_ids_;
+	bool bDeletedAny = false;
+	for (uint64_t ActorObjectId : ActorObjectIds)
+	{
+		if (ActiveLevel->DestroyActor(ActorObjectId))
+		{
+			bDeletedAny = true;
+		}
+	}
+
+	if (!bDeletedAny)
 	{
 		return false;
 	}
 
-	m_selected_actor_object_id_ = 0;
+	m_selected_actor_object_ids_.clear();
+	m_primary_selected_actor_object_id_ = 0;
 	m_gizmo_mesh_vertices_.clear();
 	m_rotate_drag_label_ = FEditorRotateDragLabel{};
 	m_renderer_.SetEditorGizmoMesh(m_gizmo_mesh_vertices_, true);
@@ -1749,6 +1787,80 @@ bool GameApp::DeleteSelectedActor()
 	m_renderer_.InvalidateSceneRenderCache();
 	BumpSceneRevision();
 	return true;
+}
+
+void GameApp::BeginMultiSelectDragSnapshot(const AActor* InPrimaryActor)
+{
+	m_multi_select_drag_followers_.clear();
+	if (InPrimaryActor == nullptr || m_selected_actor_object_ids_.size() <= 1)
+	{
+		return;
+	}
+
+	const FTransform PrimaryWorldTransform =
+		FEditorActorTransform::GetActorWorldTransform(InPrimaryActor);
+	const uint64_t PrimaryActorObjectId = InPrimaryActor->GetObjectId();
+	const ULevel* ActiveLevel = GetActiveLevel();
+	if (ActiveLevel == nullptr)
+	{
+		return;
+	}
+
+	for (uint64_t ActorObjectId : m_selected_actor_object_ids_)
+	{
+		if (ActorObjectId == PrimaryActorObjectId)
+		{
+			continue;
+		}
+
+		const AActor* FollowerActor = ActiveLevel->FindActor(ActorObjectId);
+		if (FollowerActor == nullptr)
+		{
+			continue;
+		}
+
+		const FTransform FollowerWorldTransform =
+			FEditorActorTransform::GetActorWorldTransform(FollowerActor);
+		FMultiSelectDragFollower Follower;
+		Follower.ActorObjectId = ActorObjectId;
+		Follower.RelativeToPrimaryWorld =
+			FTransform::ComputeRelative(PrimaryWorldTransform, FollowerWorldTransform);
+		m_multi_select_drag_followers_.push_back(Follower);
+	}
+}
+
+void GameApp::ApplyMultiSelectFollowersFromPrimary(const AActor* InPrimaryActor)
+{
+	if (InPrimaryActor == nullptr || m_multi_select_drag_followers_.empty())
+	{
+		return;
+	}
+
+	ULevel* ActiveLevel = GetActiveLevel();
+	if (ActiveLevel == nullptr)
+	{
+		return;
+	}
+
+	const FTransform PrimaryWorldTransform =
+		FEditorActorTransform::GetActorWorldTransform(InPrimaryActor);
+	for (const FMultiSelectDragFollower& Follower : m_multi_select_drag_followers_)
+	{
+		AActor* FollowerActor = ActiveLevel->FindActor(Follower.ActorObjectId);
+		if (FollowerActor == nullptr)
+		{
+			continue;
+		}
+
+		const FTransform NewWorldTransform =
+			FTransform::Combine(PrimaryWorldTransform, Follower.RelativeToPrimaryWorld);
+		FEditorActorTransform::SetActorWorldTransform(FollowerActor, NewWorldTransform);
+	}
+}
+
+void GameApp::ClearMultiSelectDragSnapshot()
+{
+	m_multi_select_drag_followers_.clear();
 }
 
 bool GameApp::SetSelectedActorTransform(const FActorTransform& InTransform, bool bBumpSceneRevision)
@@ -2127,7 +2239,7 @@ void GameApp::EndCameraOrbit()
 	m_b_left_click_started_on_orbit_ = false;
 }
 
-void GameApp::BeginCameraDollyAroundFocus(int InMouseX, int InMouseY)
+void GameApp::BeginCameraDollyAlongTargetAxis(int InMouseX, int InMouseY)
 {
 	const AActor* SelectedActor = GetSelectedActor();
 	if (SelectedActor == nullptr)
@@ -2135,13 +2247,14 @@ void GameApp::BeginCameraDollyAroundFocus(int InMouseX, int InMouseY)
 		return;
 	}
 
-	if (!ComputeActorFocusCenter(SelectedActor, &m_camera_dolly_focus_))
+	if (!ComputeCameraOrbitPivotAndRadius(
+		m_camera_,
+		SelectedActor,
+		&m_camera_dolly_pivot_,
+		&m_camera_dolly_radius_))
 	{
 		return;
 	}
-
-	const FVector3 CameraPos(m_camera_.position.x, m_camera_.position.y, m_camera_.position.z);
-	m_camera_dolly_distance_ = std::max((CameraPos - m_camera_dolly_focus_).Length(), kCameraDollyMinDistance);
 
 	m_b_camera_focus_active_ = false;
 	m_camera_focus_elapsed_seconds_ = 0.0f;
@@ -2156,7 +2269,7 @@ void GameApp::BeginCameraDollyAroundFocus(int InMouseX, int InMouseY)
 	}
 }
 
-void GameApp::UpdateCameraDolly(int InMouseX, int InMouseY)
+void GameApp::UpdateCameraDollyAlongTargetAxis(int InMouseX, int InMouseY)
 {
 	if (!m_b_camera_dolly_active_)
 	{
@@ -2165,14 +2278,14 @@ void GameApp::UpdateCameraDolly(int InMouseX, int InMouseY)
 
 	const float MouseDx = static_cast<float>(InMouseX - m_camera_dolly_last_mouse_x_);
 	const float MouseDy = static_cast<float>(InMouseY - m_camera_dolly_last_mouse_y_);
-	const float DollyDelta = -(MouseDx + MouseDy) * kCameraDollyMouseSensitivity * m_camera_dolly_distance_;
-	m_camera_dolly_distance_ = std::max(m_camera_dolly_distance_ + DollyDelta, kCameraDollyMinDistance);
-	ApplyCameraDollyPosition(&m_camera_, m_camera_dolly_focus_, m_camera_dolly_distance_);
+	const float RadiusDelta = -(MouseDx + MouseDy) * kCameraDollyMouseSensitivity * m_camera_dolly_radius_;
+	m_camera_dolly_radius_ = std::max(m_camera_dolly_radius_ + RadiusDelta, kCameraDollyMinRadius);
+	ApplyCameraOrbitPosition(&m_camera_, m_camera_dolly_pivot_, m_camera_dolly_radius_);
 	m_camera_dolly_last_mouse_x_ = InMouseX;
 	m_camera_dolly_last_mouse_y_ = InMouseY;
 }
 
-void GameApp::EndCameraDolly()
+void GameApp::EndCameraDollyAlongTargetAxis()
 {
 	if (!m_b_camera_dolly_active_)
 	{
@@ -2340,6 +2453,7 @@ void GameApp::TickEditorInteraction(float DeltaSeconds)
 			if (bTransformChanged)
 			{
 				FEditorActorTransform::SetEditableTransform(SelectedActor, DragTransform);
+				ApplyMultiSelectFollowersFromPrimary(SelectedActor);
 			}
 		}
 	}
@@ -2468,7 +2582,10 @@ void GameApp::OnViewportLeftMousePress(int InX, int InY)
 	m_b_left_click_started_on_orbit_ = false;
 
 	AActor* SelectedActor = GetSelectedActor();
-	if (IsAltKeyDown() && SelectedActor != nullptr)
+	const bool bIsAltDown =
+		((GetAsyncKeyState(VK_MENU) & 0x8000) != 0) ||
+		((GetAsyncKeyState(VK_RMENU) & 0x8000) != 0);
+	if (bIsAltDown && SelectedActor != nullptr)
 	{
 		m_b_left_click_started_on_orbit_ = true;
 		BeginCameraOrbitAroundSelection(InX, InY);
@@ -2529,6 +2646,7 @@ void GameApp::OnViewportLeftMousePress(int InX, int InY)
 				HitAxis,
 				kGizmoPickToleranceLoose))
 			{
+				BeginMultiSelectDragSnapshot(SelectedActor);
 				return;
 			}
 
@@ -2558,19 +2676,22 @@ void GameApp::OnViewportLeftMouseMove(int InX, int InY)
 
 void GameApp::OnViewportRightMousePress(int InX, int InY)
 {
-	if (!IsAltKeyDown())
+	const bool bIsAltDown =
+		((GetAsyncKeyState(VK_MENU) & 0x8000) != 0) ||
+		((GetAsyncKeyState(VK_RMENU) & 0x8000) != 0);
+	if (!bIsAltDown)
 	{
 		return;
 	}
 
-	BeginCameraDollyAroundFocus(InX, InY);
+	BeginCameraDollyAlongTargetAxis(InX, InY);
 }
 
 void GameApp::OnViewportRightMouseMove(int InX, int InY)
 {
 	if (m_b_camera_dolly_active_)
 	{
-		UpdateCameraDolly(InX, InY);
+		UpdateCameraDollyAlongTargetAxis(InX, InY);
 	}
 }
 
@@ -2578,7 +2699,7 @@ void GameApp::OnViewportRightMouseRelease(int InX, int InY)
 {
 	(void)InX;
 	(void)InY;
-	EndCameraDolly();
+	EndCameraDollyAlongTargetAxis();
 }
 
 void GameApp::OnViewportLeftMouseRelease(int InX, int InY)
@@ -2609,9 +2730,38 @@ void GameApp::OnViewportLeftMouseRelease(int InX, int InY)
 		MapViewportMouseToPickScreen(InX, InY, &PickScreenX, &PickScreenY);
 
 		const uint64_t PickedActorId = PickActorAtViewportPosition(InX, InY);
+		const bool bIsControlDown = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
 		if (PickedActorId != 0)
 		{
-			SelectActor(PickedActorId);
+			if (bIsControlDown)
+			{
+				std::vector<uint64_t> SelectedActorObjectIds = m_selected_actor_object_ids_;
+				const auto ExistingIt = std::find(
+					SelectedActorObjectIds.begin(),
+					SelectedActorObjectIds.end(),
+					PickedActorId);
+				if (ExistingIt != SelectedActorObjectIds.end())
+				{
+					SelectedActorObjectIds.erase(ExistingIt);
+					uint64_t PrimaryActorObjectId = m_primary_selected_actor_object_id_;
+					if (PrimaryActorObjectId == PickedActorId)
+					{
+						PrimaryActorObjectId = SelectedActorObjectIds.empty()
+							? 0
+							: SelectedActorObjectIds.back();
+					}
+					SetActorSelection(SelectedActorObjectIds, PrimaryActorObjectId);
+				}
+				else
+				{
+					SelectedActorObjectIds.push_back(PickedActorId);
+					SetActorSelection(SelectedActorObjectIds, PickedActorId);
+				}
+			}
+			else
+			{
+				SelectActor(PickedActorId);
+			}
 		}
 		else
 		{
@@ -2644,6 +2794,7 @@ void GameApp::OnViewportLeftMouseRelease(int InX, int InY)
 	m_b_left_mouse_moved_since_press_ = false;
 	m_b_left_click_started_on_gizmo_ = false;
 	m_transform_gizmo_.EndDrag();
+	ClearMultiSelectDragSnapshot();
 
 	if (bWasDraggingBeforeRelease)
 	{
@@ -2659,13 +2810,41 @@ void GameApp::BumpSceneRevision()
 
 void GameApp::ValidateSelectedActor()
 {
-	if (m_selected_actor_object_id_ == 0)
+	if (m_selected_actor_object_ids_.empty())
 	{
+		m_primary_selected_actor_object_id_ = 0;
 		return;
 	}
 
-	if (GetSelectedActor() == nullptr)
+	const ULevel* ActiveLevel = GetActiveLevel();
+	std::vector<uint64_t> ValidActorObjectIds;
+	ValidActorObjectIds.reserve(m_selected_actor_object_ids_.size());
+	for (uint64_t ActorObjectId : m_selected_actor_object_ids_)
 	{
-		m_selected_actor_object_id_ = 0;
+		if (ActiveLevel != nullptr && ActiveLevel->FindActor(ActorObjectId) != nullptr)
+		{
+			ValidActorObjectIds.push_back(ActorObjectId);
+		}
+	}
+
+	uint64_t PrimaryActorObjectId = 0;
+	if (m_primary_selected_actor_object_id_ != 0
+		&& std::find(
+			ValidActorObjectIds.begin(),
+			ValidActorObjectIds.end(),
+			m_primary_selected_actor_object_id_) != ValidActorObjectIds.end())
+	{
+		PrimaryActorObjectId = m_primary_selected_actor_object_id_;
+	}
+	else if (!ValidActorObjectIds.empty())
+	{
+		PrimaryActorObjectId = ValidActorObjectIds.back();
+	}
+
+	m_selected_actor_object_ids_ = std::move(ValidActorObjectIds);
+	m_primary_selected_actor_object_id_ = PrimaryActorObjectId;
+	if (m_primary_selected_actor_object_id_ == 0)
+	{
+		ClearMultiSelectDragSnapshot();
 	}
 }

@@ -1,8 +1,11 @@
 #pragma once
 
 #include <optional>
+#include <string>
+#include <vector>
 
 #include <QList>
+#include <QMimeData>
 #include <QUrl>
 #include <QWidget>
 
@@ -20,11 +23,61 @@ class QTreeWidget;
 class QTreeWidgetItem;
 class QAction;
 
+struct FAssetBrowserListItem;
 class AssetListModel;
 class GameApp;
 
 inline constexpr const char* kSoftObjectPathMimeType = "application/x-universeengine-softobjectpath";
+inline constexpr const char* kFolderPathMimeType = "application/x-universeengine-folderpath";
 inline constexpr int kAssetDragSourceNone = -1;
+
+inline std::vector<std::string> ExtractSoftObjectPathsFromMimeData(const QMimeData* InMimeData)
+{
+	std::vector<std::string> SoftPaths;
+	if (InMimeData == nullptr || !InMimeData->hasFormat(kSoftObjectPathMimeType))
+	{
+		return SoftPaths;
+	}
+
+	const QStringList Parts = QString::fromUtf8(InMimeData->data(kSoftObjectPathMimeType))
+		.split('\n', Qt::SkipEmptyParts);
+	for (const QString& Part : Parts)
+	{
+		const std::string SoftPath = Part.trimmed().toStdString();
+		if (!SoftPath.empty())
+		{
+			SoftPaths.push_back(SoftPath);
+		}
+	}
+	return SoftPaths;
+}
+
+inline std::vector<std::string> ExtractFolderPathsFromMimeData(const QMimeData* InMimeData)
+{
+	std::vector<std::string> FolderPaths;
+	if (InMimeData == nullptr || !InMimeData->hasFormat(kFolderPathMimeType))
+	{
+		return FolderPaths;
+	}
+
+	const QStringList Parts = QString::fromUtf8(InMimeData->data(kFolderPathMimeType))
+		.split('\n', Qt::SkipEmptyParts);
+	for (const QString& Part : Parts)
+	{
+		const std::string FolderPath = Part.trimmed().toStdString();
+		if (!FolderPath.empty())
+		{
+			FolderPaths.push_back(FolderPath);
+		}
+	}
+	return FolderPaths;
+}
+
+inline bool HasContentBrowserDropMimeData(const QMimeData* InMimeData)
+{
+	return InMimeData != nullptr
+		&& (InMimeData->hasFormat(kSoftObjectPathMimeType) || InMimeData->hasFormat(kFolderPathMimeType));
+}
 
 class AssetBrowserPanelWidget final : public QWidget
 {
@@ -35,6 +88,12 @@ public:
 
 	void RefreshFromRegistry();
 	void ApplyInitialSplitterProportions();
+	bool TryHandleDeleteShortcut();
+	void ClearAssetGridSelection();
+	void ClearFolderTreeMultiSelection();
+	void ClearAllSelections();
+	bool ContainsFolderTreeWidget(const QWidget* InWidget) const;
+	bool ContainsItemGridWidget(const QWidget* InWidget) const;
 
 protected:
 	bool eventFilter(QObject* InWatched, QEvent* InEvent) override;
@@ -43,6 +102,7 @@ protected:
 private:
 	void BuildUi();
 	void SetupContentDiskWatcher();
+	void ClearContentDiskWatchPaths();
 	void UpdateContentDiskWatchPaths();
 	void MaybePollContentDiskChanges();
 	void ApplyContentDiskChanges();
@@ -64,13 +124,33 @@ private:
 	void OnThumbnailReady(const QString& InCacheKey, const QImage& InImage);
 	void OnGridScrolled();
 	void OnAssetGridDoubleClicked(const QModelIndex& InIndex);
+	void OnGridSelectionChanged();
+	void UpdateGridStatusLabel();
 	QTreeWidgetItem* FindFolderTreeItemByPath(const std::string& InFolderPath) const;
 	void BeginRenameSelectedFolder();
+	void BeginRenameSelectedGridFolder();
 	void BeginRenameSelectedAsset();
 	void CopySelectedAsset();
 	void PasteCopiedAsset();
-	void DuplicateSelectedAsset();
-	void OnAssetDroppedToFolder(const std::string& InTargetFolderPath, const std::string& InSoftObjectPath);
+	void DuplicateSelectedAssets();
+	void ReimportSelectedAssets();
+	void DeleteSelectedAssets();
+	void DeleteSelectedFolders();
+	bool IsAssetGridFocused() const;
+	bool IsFolderTreeFocused() const;
+	bool IsRenderViewportFocused() const;
+	bool IsAssetDeleteShortcutEnabled() const;
+	void OnItemsDroppedToFolder(
+		const std::string& InTargetFolderPath,
+		const std::vector<std::string>& InSoftObjectPaths,
+		const std::vector<std::string>& InFolderPaths);
+	std::vector<const FAssetBrowserListItem*> GetSelectedAssetItems() const;
+	std::vector<std::string> GetSelectedDeletableFolderPaths() const;
+	std::vector<std::string> GetSelectedGridFolderPaths() const;
+	std::vector<std::string> CollectSelectedFolderPathsForOperation() const;
+	bool CanRenameFolderPath(const std::string& InFolderPath) const;
+	bool CanDeleteFolderItem(const QTreeWidgetItem* InItem) const;
+	bool RenameFolderByPath(const std::string& InFolderPath, const std::string& InNewFolderName);
 	void RefreshAfterAssetDiskMutation();
 	void OnFolderItemChanged(QTreeWidgetItem* InItem, int InColumn);
 	void SelectFolderTreeItemByPath(const std::string& InFolderPath);
@@ -90,7 +170,8 @@ private:
 	QAction* m_rename_action_ = nullptr;
 	QAction* m_copy_action_ = nullptr;
 	QAction* m_paste_action_ = nullptr;
-	std::optional<FAssetRegistryEntry> m_copied_asset_entry_;
+	QAction* m_delete_action_ = nullptr;
+	std::vector<FAssetRegistryEntry> m_copied_asset_entries_;
 	QFileSystemWatcher* m_content_disk_watcher_ = nullptr;
 	QTimer* m_content_rescan_timer_ = nullptr;
 

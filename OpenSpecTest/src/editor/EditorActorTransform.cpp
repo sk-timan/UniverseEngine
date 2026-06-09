@@ -97,6 +97,39 @@ bool FEditorActorTransform::SetEditableTransform(AActor* InActor, const FActorTr
 	return true;
 }
 
+bool FEditorActorTransform::SetActorWorldTransform(AActor* InActor, const FTransform& InWorldTransform)
+{
+	if (InActor == nullptr)
+	{
+		return false;
+	}
+
+	USceneComponent* RootComponent = InActor->GetRootComponent();
+	if (RootComponent == nullptr)
+	{
+		return false;
+	}
+
+	if (IsAttachedToActor(InActor))
+	{
+		AActor* ParentActor = GetAttachParentActor(InActor);
+		if (ParentActor == nullptr)
+		{
+			return false;
+		}
+
+		const FTransform ParentWorldTransform = GetActorWorldTransform(ParentActor);
+		const FTransform RelativeTransform =
+			FTransform::ComputeRelative(ParentWorldTransform, InWorldTransform);
+		RootComponent->SetRelativeTransform(RelativeTransform);
+		return true;
+	}
+
+	InActor->SetActorTransform(FActorTransform::FromSceneTransform(InWorldTransform));
+	RootComponent->SetRelativeTransform(FTransform());
+	return true;
+}
+
 bool FEditorActorTransform::WouldCreateAttachmentCycle(
 	const AActor* InChildActor,
 	const AActor* InNewParentActor)

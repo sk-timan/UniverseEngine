@@ -29,6 +29,11 @@ public:
 		std::string* OutNewSoftObjectPath,
 		std::string* OutErrorMessage);
 
+	static bool MoveFolder(
+		const std::string& InSourceFolderPath,
+		const std::string& InTargetFolderPath,
+		std::string* OutErrorMessage);
+
 private:
 	static bool IsValidRenameToken(const std::string& InName);
 };

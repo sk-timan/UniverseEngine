@@ -1,5 +1,7 @@
 #pragma once
 
+#include <vector>
+
 #include "ui/ScrollablePanelWidget.h"
 
 class QLineEdit;
@@ -27,6 +29,9 @@ private:
 	void BuildUi();
 	void RebuildActorTree();
 	void SyncTreeSelection();
+	void SyncSelectionFromTreeToGameApp();
+	void UpdateSelectionStatusLabel();
+	std::string BuildActorHierarchyFingerprint() const;
 	void PopulateTreeItem(QTreeWidgetItem* InParentItem, const AActor* InActor);
 	AActor* FindAttachmentParentActor(const AActor* InActor) const;
 	bool ActorMatchesFilter(const AActor* InActor) const;
@@ -46,7 +51,8 @@ private:
 	QLabel* m_status_label_ = nullptr;
 	QAction* m_rename_action_ = nullptr;
 	uint32_t m_last_scene_revision_ = 0;
-	uint64_t m_last_selected_actor_id_ = 0;
+	std::string m_last_actor_hierarchy_fingerprint_;
+	std::vector<uint64_t> m_last_selected_actor_ids_;
 	bool m_is_tree_refreshing_ = false;
 	bool m_is_renaming_tree_item_ = false;
 };

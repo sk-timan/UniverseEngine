@@ -21,6 +21,7 @@
 #include "data/GameplayConfig.h"
 
 class QCloseEvent;
+class QEvent;
 class QDragEnterEvent;
 class QDragMoveEvent;
 class QDropEvent;
@@ -96,7 +97,7 @@ class MainWindow final : public QMainWindow
 
 public:
 	explicit MainWindow(GameApp* InGameApp);
-	~MainWindow() override = default;
+	~MainWindow() override;
 
 	HWND GetRenderWindowHandle() const;
 	int GetRenderWidth() const;
@@ -105,6 +106,7 @@ public:
 
 protected:
 	void closeEvent(QCloseEvent* InEvent) override;
+	bool eventFilter(QObject* InWatched, QEvent* InEvent) override;
 
 private slots:
 	void OnFrameTick();

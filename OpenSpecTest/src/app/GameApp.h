@@ -14,6 +14,7 @@
 #include "data/ResourceLoader.h"
 #include "editor/EditorTransformGizmo.h"
 #include "editor/EditorTypes.h"
+#include "math/FTransform.h"
 #include "render/Dx12Renderer.h"
 #include "world/ActorTransform.h"
 #include "world/World.h"
@@ -76,9 +77,12 @@ public:
 	const ULevel* GetActiveLevel() const;
 	uint32_t GetSceneRevision() const;
 	uint64_t GetSelectedActorObjectId() const;
+	std::vector<uint64_t> GetSelectedActorObjectIds() const;
+	size_t GetSelectedActorCount() const;
 	AActor* GetSelectedActor();
 	const AActor* GetSelectedActor() const;
 	void SelectActor(uint64_t InActorObjectId);
+	void SetActorSelection(const std::vector<uint64_t>& InActorObjectIds, uint64_t InPrimaryActorObjectId);
 	bool DeleteSelectedActor();
 	bool SetSelectedActorTransform(const FActorTransform& InTransform, bool bBumpSceneRevision = false);
 	FActorTransform GetSelectedActorEditableTransform() const;
@@ -116,13 +120,16 @@ private:
 	void BeginCameraOrbitAroundSelection(int InMouseX, int InMouseY);
 	void UpdateCameraOrbit(int InMouseX, int InMouseY);
 	void EndCameraOrbit();
-	void BeginCameraDollyAroundFocus(int InMouseX, int InMouseY);
-	void UpdateCameraDolly(int InMouseX, int InMouseY);
-	void EndCameraDolly();
+	void BeginCameraDollyAlongTargetAxis(int InMouseX, int InMouseY);
+	void UpdateCameraDollyAlongTargetAxis(int InMouseX, int InMouseY);
+	void EndCameraDollyAlongTargetAxis();
 	void UpdateInput(float DeltaSeconds);
 	void TickEditorInteraction(float DeltaSeconds);
 	void BumpSceneRevision();
 	void ValidateSelectedActor();
+	void BeginMultiSelectDragSnapshot(const AActor* InPrimaryActor);
+	void ApplyMultiSelectFollowersFromPrimary(const AActor* InPrimaryActor);
+	void ClearMultiSelectDragSnapshot();
 	bool InitializeDataDrivenResources(std::wstring* OutErrorMessage);
 	bool EnsureLevelDefinitionForMapId(const std::string& InMapId, std::string* OutErrorMessage);
 	bool ResolveMapModelPathByMapId(const std::string& InMapId, std::filesystem::path* OutMapModelPath, std::string* OutErrorMessage) const;
@@ -173,7 +180,14 @@ private:
 	std::unique_ptr<UWorld> m_world_;
 	std::unique_ptr<class MainWindow> m_main_window_;
 	Dx12Renderer m_renderer_;
-	uint64_t m_selected_actor_object_id_ = 0;
+	std::vector<uint64_t> m_selected_actor_object_ids_;
+	uint64_t m_primary_selected_actor_object_id_ = 0;
+	struct FMultiSelectDragFollower
+	{
+		uint64_t ActorObjectId = 0;
+		FTransform RelativeToPrimaryWorld{};
+	};
+	std::vector<FMultiSelectDragFollower> m_multi_select_drag_followers_;
 	uint32_t m_scene_revision_ = 0;
 	EGizmoMode m_gizmo_mode_ = EGizmoMode::Translate;
 	FEditorTransformGizmo m_transform_gizmo_{};
@@ -191,8 +205,8 @@ private:
 	int m_camera_orbit_last_mouse_x_ = 0;
 	int m_camera_orbit_last_mouse_y_ = 0;
 	bool m_b_camera_dolly_active_ = false;
-	FVector3 m_camera_dolly_focus_{};
-	float m_camera_dolly_distance_ = 0.0f;
+	FVector3 m_camera_dolly_pivot_{};
+	float m_camera_dolly_radius_ = 0.0f;
 	int m_camera_dolly_last_mouse_x_ = 0;
 	int m_camera_dolly_last_mouse_y_ = 0;
 	bool m_key_w_was_down_ = false;

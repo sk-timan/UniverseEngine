@@ -9,7 +9,9 @@
 #include <QDropEvent>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QItemSelectionModel>
 #include <QKeyEvent>
+#include <QSignalBlocker>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
@@ -108,7 +110,8 @@ void WorldContentPanelWidget::BuildUi()
 	m_actor_tree_->setHeaderLabels({tr("Item Label"), tr("Type")});
 	m_actor_tree_->setRootIsDecorated(true);
 	m_actor_tree_->setAlternatingRowColors(true);
-	m_actor_tree_->setSelectionMode(QAbstractItemView::SingleSelection);
+	m_actor_tree_->setSelectionMode(QAbstractItemView::ExtendedSelection);
+	m_actor_tree_->setSelectionBehavior(QAbstractItemView::SelectRows);
 	m_actor_tree_->setContextMenuPolicy(Qt::CustomContextMenu);
 	m_actor_tree_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 	m_actor_tree_->setTextElideMode(Qt::ElideMiddle);
@@ -152,6 +155,11 @@ void WorldContentPanelWidget::BuildUi()
 		&WorldContentPanelWidget::OnTreeItemClicked);
 	connect(
 		m_actor_tree_,
+		&QTreeWidget::itemSelectionChanged,
+		this,
+		&WorldContentPanelWidget::SyncSelectionFromTreeToGameApp);
+	connect(
+		m_actor_tree_,
 		&QTreeWidget::itemChanged,
 		this,
 		&WorldContentPanelWidget::OnTreeItemChanged);
@@ -180,6 +188,49 @@ bool WorldContentPanelWidget::eventFilter(QObject* InWatched, QEvent* InEvent)
 	return ScrollablePanelWidget::eventFilter(InWatched, InEvent);
 }
 
+std::string WorldContentPanelWidget::BuildActorHierarchyFingerprint() const
+{
+	if (m_game_app_ == nullptr)
+	{
+		return {};
+	}
+
+	const ULevel* ActiveLevel = m_game_app_->GetActiveLevel();
+	if (ActiveLevel == nullptr)
+	{
+		return {};
+	}
+
+	std::vector<std::string> Parts;
+	for (const uint64_t ActorObjectId : ActiveLevel->GetActorObjectIds())
+	{
+		const AActor* Actor = ActiveLevel->FindActor(ActorObjectId);
+		if (Actor == nullptr || Actor->IsPendingDestroy())
+		{
+			continue;
+		}
+
+		const AActor* ParentActor = FindAttachmentParentActor(Actor);
+		const uint64_t ParentActorObjectId = (ParentActor != nullptr) ? ParentActor->GetObjectId() : 0;
+		Parts.push_back(
+			std::to_string(ActorObjectId) + ":"
+			+ std::to_string(ParentActorObjectId) + ":"
+			+ Actor->GetObjectName());
+	}
+
+	std::sort(Parts.begin(), Parts.end());
+	std::string Fingerprint;
+	for (const std::string& Part : Parts)
+	{
+		if (!Fingerprint.empty())
+		{
+			Fingerprint.push_back('\n');
+		}
+		Fingerprint += Part;
+	}
+	return Fingerprint;
+}
+
 void WorldContentPanelWidget::RefreshFromScene()
 {
 	if (m_game_app_ == nullptr)
@@ -188,62 +239,176 @@ void WorldContentPanelWidget::RefreshFromScene()
 	}
 
 	const uint32_t SceneRevision = m_game_app_->GetSceneRevision();
-	const uint64_t SelectedActorId = m_game_app_->GetSelectedActorObjectId();
-	if (SceneRevision == m_last_scene_revision_ && m_actor_tree_->topLevelItemCount() > 0)
+	const std::vector<uint64_t> SelectedActorIds = m_game_app_->GetSelectedActorObjectIds();
+	const std::string HierarchyFingerprint = BuildActorHierarchyFingerprint();
+	const bool bHasTreeItems = m_actor_tree_->topLevelItemCount() > 0;
+	const bool bHierarchyUnchanged =
+		bHasTreeItems
+		&& !HierarchyFingerprint.empty()
+		&& HierarchyFingerprint == m_last_actor_hierarchy_fingerprint_;
+
+	if (SceneRevision == m_last_scene_revision_ && bHasTreeItems)
 	{
-		if (SelectedActorId != m_last_selected_actor_id_)
+		if (SelectedActorIds != m_last_selected_actor_ids_)
 		{
-			m_last_selected_actor_id_ = SelectedActorId;
+			m_last_selected_actor_ids_ = SelectedActorIds;
 			SyncTreeSelection();
 		}
 		return;
 	}
 
+	if (bHierarchyUnchanged)
+	{
+		m_last_scene_revision_ = SceneRevision;
+		if (SelectedActorIds != m_last_selected_actor_ids_)
+		{
+			m_last_selected_actor_ids_ = SelectedActorIds;
+			SyncTreeSelection();
+		}
+		else
+		{
+			UpdateSelectionStatusLabel();
+		}
+		return;
+	}
+
 	m_last_scene_revision_ = SceneRevision;
-	m_last_selected_actor_id_ = SelectedActorId;
+	m_last_selected_actor_ids_ = SelectedActorIds;
+	m_last_actor_hierarchy_fingerprint_ = HierarchyFingerprint;
 	RebuildActorTree();
 }
 
-void WorldContentPanelWidget::SyncTreeSelection()
+void WorldContentPanelWidget::UpdateSelectionStatusLabel()
 {
-	if (m_actor_tree_ == nullptr || m_game_app_ == nullptr)
+	if (m_status_label_ == nullptr || m_game_app_ == nullptr)
 	{
 		return;
 	}
 
-	const uint64_t SelectedActorId = m_game_app_->GetSelectedActorObjectId();
-	std::function<void(QTreeWidgetItem*)> SelectIfMatches;
-	SelectIfMatches = [&](QTreeWidgetItem* InItem)
+	const ULevel* ActiveLevel = m_game_app_->GetActiveLevel();
+	const size_t ActorCount = (ActiveLevel != nullptr) ? ActiveLevel->GetActorCount() : 0;
+	const int SelectedCount = static_cast<int>(m_game_app_->GetSelectedActorCount());
+	m_status_label_->setText(
+		tr("%1 actors (%2 selected)").arg(static_cast<int>(ActorCount)).arg(SelectedCount));
+}
+
+void WorldContentPanelWidget::SyncTreeSelection()
+{
+	if (m_actor_tree_ == nullptr || m_game_app_ == nullptr || m_actor_tree_->selectionModel() == nullptr)
+	{
+		return;
+	}
+
+	m_is_tree_refreshing_ = true;
+	const QSignalBlocker TreeSignalBlocker(m_actor_tree_);
+
+	const std::vector<uint64_t> SelectedActorIds = m_game_app_->GetSelectedActorObjectIds();
+	const uint64_t PrimaryActorId = m_game_app_->GetSelectedActorObjectId();
+	QItemSelection NewSelection;
+	QModelIndex PrimaryIndex;
+
+	std::function<void(QTreeWidgetItem*)> CollectSelection;
+	CollectSelection = [&](QTreeWidgetItem* InItem)
 	{
 		if (InItem == nullptr)
 		{
 			return;
 		}
+
 		const qulonglong ItemActorId = InItem->data(0, kActorObjectIdRole).toULongLong();
-		if (ItemActorId == static_cast<qulonglong>(SelectedActorId))
+		if (ItemActorId != 0 && ItemActorId != kWorldRootItemId)
 		{
-			m_actor_tree_->setCurrentItem(InItem);
-			return;
+			const bool bIsSelected = std::find(
+				SelectedActorIds.begin(),
+				SelectedActorIds.end(),
+				static_cast<uint64_t>(ItemActorId)) != SelectedActorIds.end();
+			if (bIsSelected)
+			{
+				const QModelIndex ItemIndex = m_actor_tree_->indexFromItem(InItem);
+				if (ItemIndex.isValid())
+				{
+					NewSelection.select(ItemIndex, ItemIndex);
+					if (static_cast<uint64_t>(ItemActorId) == PrimaryActorId)
+					{
+						PrimaryIndex = ItemIndex;
+					}
+				}
+			}
 		}
+
 		for (int ChildIndex = 0; ChildIndex < InItem->childCount(); ++ChildIndex)
 		{
-			SelectIfMatches(InItem->child(ChildIndex));
+			CollectSelection(InItem->child(ChildIndex));
 		}
 	};
 
 	for (int TopIndex = 0; TopIndex < m_actor_tree_->topLevelItemCount(); ++TopIndex)
 	{
-		SelectIfMatches(m_actor_tree_->topLevelItem(TopIndex));
+		CollectSelection(m_actor_tree_->topLevelItem(TopIndex));
 	}
 
-	const ULevel* ActiveLevel = m_game_app_->GetActiveLevel();
-	const size_t ActorCount = (ActiveLevel != nullptr) ? ActiveLevel->GetActorCount() : 0;
-	const int SelectedCount = (SelectedActorId != 0) ? 1 : 0;
-	if (m_status_label_ != nullptr)
+	QItemSelectionModel* SelectionModel = m_actor_tree_->selectionModel();
+	SelectionModel->select(NewSelection, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+	if (PrimaryIndex.isValid())
 	{
-		m_status_label_->setText(
-			tr("%1 actors (%2 selected)").arg(static_cast<int>(ActorCount)).arg(SelectedCount));
+		SelectionModel->setCurrentIndex(PrimaryIndex, QItemSelectionModel::Current);
 	}
+	else
+	{
+		SelectionModel->setCurrentIndex(QModelIndex(), QItemSelectionModel::Current);
+	}
+
+	m_is_tree_refreshing_ = false;
+	UpdateSelectionStatusLabel();
+}
+
+void WorldContentPanelWidget::SyncSelectionFromTreeToGameApp()
+{
+	if (m_is_tree_refreshing_ || m_game_app_ == nullptr || m_actor_tree_ == nullptr)
+	{
+		return;
+	}
+
+	std::vector<uint64_t> SelectedActorIds;
+	const QList<QTreeWidgetItem*> SelectedItems = m_actor_tree_->selectedItems();
+	SelectedActorIds.reserve(static_cast<size_t>(SelectedItems.size()));
+	for (QTreeWidgetItem* Item : SelectedItems)
+	{
+		if (Item == nullptr)
+		{
+			continue;
+		}
+
+		const qulonglong ActorObjectId = Item->data(0, kActorObjectIdRole).toULongLong();
+		if (ActorObjectId == 0 || ActorObjectId == kWorldRootItemId)
+		{
+			continue;
+		}
+
+		SelectedActorIds.push_back(static_cast<uint64_t>(ActorObjectId));
+	}
+
+	uint64_t PrimaryActorId = 0;
+	if (QTreeWidgetItem* CurrentItem = m_actor_tree_->currentItem())
+	{
+		const qulonglong CurrentActorObjectId = CurrentItem->data(0, kActorObjectIdRole).toULongLong();
+		if (CurrentActorObjectId != 0 && CurrentActorObjectId != kWorldRootItemId)
+		{
+			PrimaryActorId = static_cast<uint64_t>(CurrentActorObjectId);
+		}
+	}
+
+	if (SelectedActorIds.empty())
+	{
+		m_game_app_->SelectActor(0);
+	}
+	else
+	{
+		m_game_app_->SetActorSelection(SelectedActorIds, PrimaryActorId);
+	}
+
+	m_last_selected_actor_ids_ = m_game_app_->GetSelectedActorObjectIds();
+	UpdateSelectionStatusLabel();
 }
 
 AActor* WorldContentPanelWidget::FindAttachmentParentActor(const AActor* InActor) const
@@ -446,13 +611,16 @@ void WorldContentPanelWidget::RebuildActorTree()
 		PopulateTreeItem(WorldRootItem, RootActor);
 	}
 
-	const size_t ActorCount = ActorById.size();
-	const uint64_t SelectedActorId = m_game_app_->GetSelectedActorObjectId();
-	const int SelectedCount = (SelectedActorId != 0) ? 1 : 0;
-	m_status_label_->setText(
-		tr("%1 actors (%2 selected)").arg(static_cast<int>(ActorCount)).arg(SelectedCount));
-
+	(void)ActorById;
+	UpdateSelectionStatusLabel();
 	SyncTreeSelection();
+
+	m_last_actor_hierarchy_fingerprint_ = BuildActorHierarchyFingerprint();
+	if (m_game_app_ != nullptr)
+	{
+		m_last_scene_revision_ = m_game_app_->GetSceneRevision();
+		m_last_selected_actor_ids_ = m_game_app_->GetSelectedActorObjectIds();
+	}
 
 	m_is_tree_refreshing_ = false;
 	RefreshScrollContentGeometry();
@@ -522,17 +690,17 @@ void WorldContentPanelWidget::OnTreeItemClicked(QTreeWidgetItem* InItem, int InC
 	}
 
 	const qulonglong ActorObjectId = InItem->data(0, kActorObjectIdRole).toULongLong();
-	if (ActorObjectId == 0 || ActorObjectId == kWorldRootItemId)
+	if (ActorObjectId == kWorldRootItemId)
 	{
+		m_is_tree_refreshing_ = true;
+		m_actor_tree_->clearSelection();
+		InItem->setSelected(true);
+		m_actor_tree_->setCurrentItem(InItem);
+		m_is_tree_refreshing_ = false;
 		m_game_app_->SelectActor(0);
+		m_last_selected_actor_ids_.clear();
+		UpdateSelectionStatusLabel();
 	}
-	else
-	{
-		m_game_app_->SelectActor(static_cast<uint64_t>(ActorObjectId));
-	}
-
-	m_last_selected_actor_id_ = m_game_app_->GetSelectedActorObjectId();
-	SyncTreeSelection();
 }
 
 void WorldContentPanelWidget::OnTreeItemChanged(QTreeWidgetItem* InItem, int InColumn)
@@ -589,9 +757,16 @@ void WorldContentPanelWidget::OnTreeContextMenuRequested(const QPoint& InPos)
 	const qulonglong ActorObjectId = Item->data(0, kActorObjectIdRole).toULongLong();
 	if (ActorObjectId != 0 && ActorObjectId != kWorldRootItemId)
 	{
-		m_game_app_->SelectActor(static_cast<uint64_t>(ActorObjectId));
-		m_last_selected_actor_id_ = m_game_app_->GetSelectedActorObjectId();
-		SyncTreeSelection();
+		if (!Item->isSelected())
+		{
+			m_actor_tree_->setCurrentItem(Item);
+			Item->setSelected(true);
+		}
+		else
+		{
+			m_actor_tree_->setCurrentItem(Item);
+		}
+		SyncSelectionFromTreeToGameApp();
 	}
 
 	QMenu ContextMenu(this);
@@ -599,7 +774,7 @@ void WorldContentPanelWidget::OnTreeContextMenuRequested(const QPoint& InPos)
 	RenameAction->setShortcut(QKeySequence(Qt::Key_F2));
 	RenameAction->setEnabled(CanRenameTreeItem(Item));
 	QAction* DeleteAction = ContextMenu.addAction(tr("删除"));
-	DeleteAction->setEnabled(m_game_app_->GetSelectedActorObjectId() != 0);
+	DeleteAction->setEnabled(m_game_app_->GetSelectedActorCount() > 0);
 	connect(
 		RenameAction,
 		&QAction::triggered,
@@ -625,7 +800,7 @@ void WorldContentPanelWidget::OnDeleteSelectedActorRequested()
 	if (m_game_app_->DeleteSelectedActor())
 	{
 		m_last_scene_revision_ = 0;
-		m_last_selected_actor_id_ = 0;
+		m_last_selected_actor_ids_.clear();
 		RefreshFromScene();
 	}
 }

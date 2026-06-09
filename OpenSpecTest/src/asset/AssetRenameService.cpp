@@ -1,6 +1,7 @@
 #include "asset/AssetRenameService.h"
 
 #include <algorithm>
+#include <filesystem>
 
 #include "asset/AssetDuplicateService.h"
 #include "asset/AssetRedirectStore.h"
@@ -121,6 +122,145 @@ bool RelocateAssetPath(
 	FAssetThumbnailService::Get().InvalidateEntry(InEntry);
 	const std::string NewSoftPath = FSoftObjectPath::Build(Header.AssetPath, Header.ObjectName);
 	FAssetRedirectStore::Get().RecordRedirect(OldSoftPath, NewSoftPath);
+	return true;
+}
+
+std::filesystem::path ResolveFolderDiskPath(const std::string& InFolderPath)
+{
+	if (InFolderPath.empty() || InFolderPath == "All" || InFolderPath == "Content")
+	{
+		return {};
+	}
+
+	return ResolveContentFilePath(Utf8GenericToFsPath(InFolderPath));
+}
+
+std::filesystem::path ResolveUAssetPathFromAssetPath(const std::string& InAssetPath)
+{
+	std::filesystem::path RelativePath = Utf8GenericToFsPath(InAssetPath);
+	RelativePath.replace_extension(".uasset");
+	return ResolveContentFilePath(RelativePath);
+}
+
+std::string FormatFilesystemErrorMessage(const std::error_code& InErrorCode)
+{
+	return "system error " + std::to_string(InErrorCode.value());
+}
+
+bool UpdateAssetAfterFolderDiskRename(
+	const FAssetRegistryEntry& InEntry,
+	const std::string& InNewAssetPath,
+	std::string* OutErrorMessage)
+{
+	if (OutErrorMessage != nullptr)
+	{
+		*OutErrorMessage = "";
+	}
+
+	const std::filesystem::path NewUAssetPath = ResolveUAssetPathFromAssetPath(InNewAssetPath);
+	if (!std::filesystem::exists(NewUAssetPath))
+	{
+		return RelocateAssetPath(InEntry, InNewAssetPath, OutErrorMessage);
+	}
+
+	FAssetPackageHeader Header;
+	if (!UAssetSerializer::LoadHeader(NewUAssetPath, &Header, OutErrorMessage))
+	{
+		return false;
+	}
+
+	const std::string OldSoftPath = FSoftObjectPath::Build(InEntry.AssetPath, InEntry.ObjectName);
+	ResourceRegistry::Get().UnregisterAssetByPath(std::filesystem::path(OldSoftPath));
+
+	Header.AssetPath = InNewAssetPath;
+	UStreamableRenderAsset* LoadedAsset = UAssetSerializer::LoadObject(NewUAssetPath, OutErrorMessage);
+	if (LoadedAsset == nullptr)
+	{
+		return false;
+	}
+
+	LoadedAsset->SetAssetPath(InNewAssetPath);
+	if (!UAssetSerializer::Save(Header, *LoadedAsset, NewUAssetPath, OutErrorMessage))
+	{
+		delete LoadedAsset;
+		return false;
+	}
+
+	delete LoadedAsset;
+
+	FAssetRegistry::Get().RemoveByAssetPath(InEntry.AssetPath);
+	FAssetRegistry::Get().RegisterFromHeader(Header, NewUAssetPath);
+	FAssetThumbnailService::Get().InvalidateEntry(InEntry);
+	const std::string NewSoftPath = FSoftObjectPath::Build(Header.AssetPath, Header.ObjectName);
+	FAssetRedirectStore::Get().RecordRedirect(OldSoftPath, NewSoftPath);
+	return true;
+}
+
+bool RelocateFolderPath(
+	const std::string& InFolderPath,
+	const std::string& InNewFolderPath,
+	std::string* OutErrorMessage)
+{
+	if (InFolderPath == InNewFolderPath)
+	{
+		return true;
+	}
+
+	std::vector<FAssetRegistryEntry> AffectedEntries;
+	for (const FAssetRegistryEntry& Entry : FAssetRegistry::Get().ListAssets())
+	{
+		if (StartsWithPathPrefix(Entry.AssetPath, InFolderPath))
+		{
+			AffectedEntries.push_back(Entry);
+		}
+	}
+
+	const std::filesystem::path OldDiskPath = ResolveFolderDiskPath(InFolderPath);
+	const std::filesystem::path NewDiskPath = ResolveFolderDiskPath(InNewFolderPath);
+	bool bRenamedFolderOnDisk = false;
+	if (!OldDiskPath.empty() && OldDiskPath != NewDiskPath && std::filesystem::exists(OldDiskPath))
+	{
+		if (std::filesystem::exists(NewDiskPath))
+		{
+			if (OutErrorMessage != nullptr)
+			{
+				*OutErrorMessage = "Target folder already exists: " + FsPathUtf8Generic(NewDiskPath);
+			}
+			return false;
+		}
+
+		std::error_code ErrorCode;
+		std::filesystem::rename(OldDiskPath, NewDiskPath, ErrorCode);
+		if (ErrorCode)
+		{
+			if (OutErrorMessage != nullptr)
+			{
+				*OutErrorMessage = "Failed to rename folder on disk ("
+					+ FsPathUtf8Generic(OldDiskPath) + " -> " + FsPathUtf8Generic(NewDiskPath)
+					+ "): " + FormatFilesystemErrorMessage(ErrorCode);
+			}
+			return false;
+		}
+
+		bRenamedFolderOnDisk = true;
+	}
+
+	for (const FAssetRegistryEntry& Entry : AffectedEntries)
+	{
+		const std::string NewAssetPath = ReplacePathPrefix(Entry.AssetPath, InFolderPath, InNewFolderPath);
+		if (bRenamedFolderOnDisk)
+		{
+			if (!UpdateAssetAfterFolderDiskRename(Entry, NewAssetPath, OutErrorMessage))
+			{
+				return false;
+			}
+		}
+		else if (!RelocateAssetPath(Entry, NewAssetPath, OutErrorMessage))
+		{
+			return false;
+		}
+	}
+
 	return true;
 }
 } // namespace
@@ -359,7 +499,7 @@ bool FAssetRenameService::RenameFolder(
 		*OutErrorMessage = "";
 	}
 
-	if (InFolderPath.empty() || InFolderPath == "All")
+	if (InFolderPath.empty() || InFolderPath == "All" || InFolderPath == "Content")
 	{
 		if (OutErrorMessage != nullptr)
 		{
@@ -389,33 +529,63 @@ bool FAssetRenameService::RenameFolder(
 	const std::string NewFolderPath =
 		ParentPath.empty() ? InNewFolderName : ParentPath + "/" + InNewFolderName;
 
-	std::vector<FAssetRegistryEntry> AffectedEntries;
-	for (const FAssetRegistryEntry& Entry : FAssetRegistry::Get().ListAssets())
+	return RelocateFolderPath(InFolderPath, NewFolderPath, OutErrorMessage);
+}
+
+bool FAssetRenameService::MoveFolder(
+	const std::string& InSourceFolderPath,
+	const std::string& InTargetFolderPath,
+	std::string* OutErrorMessage)
+{
+	if (OutErrorMessage != nullptr)
 	{
-		if (StartsWithPathPrefix(Entry.AssetPath, InFolderPath))
-		{
-			AffectedEntries.push_back(Entry);
-		}
+		*OutErrorMessage = "";
 	}
 
-	std::sort(
-		AffectedEntries.begin(),
-		AffectedEntries.end(),
-		[](const FAssetRegistryEntry& A, const FAssetRegistryEntry& B)
-		{
-			return A.AssetPath.size() > B.AssetPath.size();
-		});
-
-	for (const FAssetRegistryEntry& Entry : AffectedEntries)
+	if (InSourceFolderPath.empty() || InSourceFolderPath == "All" || InSourceFolderPath == "Content")
 	{
-		const std::string NewAssetPath = ReplacePathPrefix(Entry.AssetPath, InFolderPath, NewFolderPath);
-		if (!RelocateAssetPath(Entry, NewAssetPath, OutErrorMessage))
+		if (OutErrorMessage != nullptr)
 		{
-			return false;
+			*OutErrorMessage = "Cannot move protected folder.";
 		}
+		return false;
 	}
 
-	return true;
+	if (InTargetFolderPath.empty() || InTargetFolderPath == "All")
+	{
+		if (OutErrorMessage != nullptr)
+		{
+			*OutErrorMessage = "Invalid target folder.";
+		}
+		return false;
+	}
+
+	if (InSourceFolderPath == InTargetFolderPath)
+	{
+		if (OutErrorMessage != nullptr)
+		{
+			*OutErrorMessage = "Cannot move folder into itself.";
+		}
+		return false;
+	}
+
+	if (StartsWithPathPrefix(InTargetFolderPath, InSourceFolderPath))
+	{
+		if (OutErrorMessage != nullptr)
+		{
+			*OutErrorMessage = "Cannot move folder into its subfolder.";
+		}
+		return false;
+	}
+
+	const size_t LastSlash = InSourceFolderPath.find_last_of('/');
+	const std::string FolderName =
+		(LastSlash == std::string::npos) ? InSourceFolderPath : InSourceFolderPath.substr(LastSlash + 1);
+	const std::string NewFolderPath = (InTargetFolderPath == "Content")
+		? FolderName
+		: InTargetFolderPath + "/" + FolderName;
+
+	return RelocateFolderPath(InSourceFolderPath, NewFolderPath, OutErrorMessage);
 }
 
 bool FAssetRenameService::CreateFolder(

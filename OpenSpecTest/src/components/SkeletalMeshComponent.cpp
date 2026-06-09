@@ -38,6 +38,12 @@ USkeletalMesh* USkeletalMeshComponent::GetSkeletalMesh() const
 	return SkeletalMesh_;
 }
 
+void USkeletalMeshComponent::ClearLoadedMesh()
+{
+	SkeletalMesh_ = nullptr;
+	UMeshComponent::ClearLoadedMesh();
+}
+
 void USkeletalMeshComponent::CreateRenderState(FPrimitiveRenderState* OutRenderState)
 {
 	USkinnedMeshComponent::CreateRenderState(OutRenderState);

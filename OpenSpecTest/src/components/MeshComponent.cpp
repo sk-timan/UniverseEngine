@@ -67,6 +67,11 @@ UStreamableRenderAsset* UMeshComponent::GetMeshAsset() const
 	return MeshAsset_;
 }
 
+void UMeshComponent::ClearLoadedMesh()
+{
+	MeshAsset_ = nullptr;
+}
+
 void UMeshComponent::SetMaterialOverride(int32_t InSlot, const std::string& InMaterialAssetId)
 {
 	for (auto& Override : MaterialOverrides_)

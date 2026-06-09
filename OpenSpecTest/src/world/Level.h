@@ -67,6 +67,7 @@ public:
 
 	ObjectRegistry* GetObjectRegistry();
 	const ObjectRegistry* GetObjectRegistry() const;
+	void UnloadMeshAssetReferences(const std::string& InSoftObjectPath);
 
 private:
 	UStaticMeshComponent* ResolveStaticMeshComponentAsset(UActorComponent* InComponent, std::string* OutErrorMessage);

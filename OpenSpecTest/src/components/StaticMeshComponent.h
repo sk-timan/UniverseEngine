@@ -20,6 +20,7 @@ public:
 
 	void SetStaticMesh(UStaticMesh* InStaticMesh);
 	UStaticMesh* GetStaticMesh() const;
+	void ClearLoadedMesh() override;
 
 	virtual void CreateRenderState(FPrimitiveRenderState* OutRenderState) override;
 	virtual void UpdateRenderState(FPrimitiveRenderState* InOutRenderState) override;

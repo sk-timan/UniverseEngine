@@ -20,6 +20,7 @@ public:
 
 	void SetSkeletalMesh(USkeletalMesh* InSkeletalMesh);
 	USkeletalMesh* GetSkeletalMesh() const;
+	void ClearLoadedMesh() override;
 
 	virtual void CreateRenderState(FPrimitiveRenderState* OutRenderState) override;
 	virtual void UpdateRenderState(FPrimitiveRenderState* InOutRenderState) override;

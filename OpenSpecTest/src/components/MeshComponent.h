@@ -26,6 +26,7 @@ public:
 
 	void SetMeshAsset(UStreamableRenderAsset* InAsset);
 	UStreamableRenderAsset* GetMeshAsset() const;
+	virtual void ClearLoadedMesh();
 
 	struct FMaterialOverride
 	{

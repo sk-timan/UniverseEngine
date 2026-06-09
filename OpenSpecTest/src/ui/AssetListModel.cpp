@@ -92,9 +92,9 @@ Qt::ItemFlags AssetListModel::flags(const QModelIndex& InIndex) const
 
 	if (Item->bIsFolder)
 	{
-		ItemFlags |= Qt::ItemIsDropEnabled;
+		ItemFlags |= Qt::ItemIsDropEnabled | Qt::ItemIsDragEnabled;
 	}
-	else if (AssetTypeInfo::IsMeshAssetType(Item->Entry.Type))
+	else
 	{
 		ItemFlags |= Qt::ItemIsDragEnabled;
 	}

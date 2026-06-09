@@ -6,6 +6,8 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QCoreApplication>
+#include <QEventLoop>
 #include <QAbstractItemView>
 #include <QClipboard>
 #include <QComboBox>
@@ -31,6 +33,10 @@
 #include <QMenu>
 #include <QMessageBox>
 #include <QMimeData>
+#include <QContextMenuEvent>
+#include <QMouseEvent>
+#include <QItemSelectionModel>
+#include <QRubberBand>
 #include <QScrollBar>
 #include <QShowEvent>
 #include <QSet>
@@ -41,8 +47,10 @@
 #include <QVBoxLayout>
 
 #include "app/GameApp.h"
+#include "world/Level.h"
 #include "asset/AssetFolderTree.h"
 #include "asset/AssetRegistry.h"
+#include "asset/AssetDeleteService.h"
 #include "asset/AssetDuplicateService.h"
 #include "asset/AssetRenameService.h"
 #include "asset/AssetTypeInfo.h"
@@ -50,6 +58,7 @@
 #include "asset/ProjectPaths.h"
 #include "asset/SoftObjectPath.h"
 #include "asset/thumbnail/AssetThumbnailService.h"
+#include "ui/AssetBrowserItemTooltipWidget.h"
 #include "ui/AssetListModel.h"
 #include "ui/AssetTileDelegate.h"
 
@@ -72,6 +81,174 @@ QString FsPathToQString(const std::filesystem::path& InPath)
 QString Utf8StdStringToQString(const std::string& InUtf8Text)
 {
 	return QString::fromUtf8(InUtf8Text.c_str(), static_cast<int>(InUtf8Text.size()));
+}
+
+QString FolderPathToDisplayName(const std::string& InFolderPath)
+{
+	if (InFolderPath.empty() || InFolderPath == "All")
+	{
+		return QStringLiteral("All");
+	}
+
+	const size_t LastSlashIndex = InFolderPath.find_last_of('/');
+	if (LastSlashIndex == std::string::npos)
+	{
+		return Utf8StdStringToQString(InFolderPath);
+	}
+
+	return Utf8StdStringToQString(InFolderPath.substr(LastSlashIndex + 1));
+}
+
+bool IsSubfolderPath(const std::string& InChildPath, const std::string& InParentPath)
+{
+	if (InParentPath.empty() || InChildPath.empty() || InChildPath == InParentPath)
+	{
+		return false;
+	}
+
+	const std::string Prefix = InParentPath + "/";
+	return InChildPath.size() > Prefix.size() && InChildPath.compare(0, Prefix.size(), Prefix) == 0;
+}
+
+std::vector<std::string> DeduplicateNestedFolderPaths(std::vector<std::string> InFolderPaths)
+{
+	std::sort(
+		InFolderPaths.begin(),
+		InFolderPaths.end(),
+		[](const std::string& A, const std::string& B)
+		{
+			if (A.size() != B.size())
+			{
+				return A.size() < B.size();
+			}
+			return A < B;
+		});
+
+	std::vector<std::string> RootFolderPaths;
+	for (const std::string& FolderPath : InFolderPaths)
+	{
+		bool bIsNestedSelection = false;
+		for (const std::string& RootPath : RootFolderPaths)
+		{
+			if (IsSubfolderPath(FolderPath, RootPath))
+			{
+				bIsNestedSelection = true;
+				break;
+			}
+		}
+
+		if (!bIsNestedSelection)
+		{
+			RootFolderPaths.push_back(FolderPath);
+		}
+	}
+
+	return RootFolderPaths;
+}
+
+bool IsDraggableFolderPath(const std::string& InFolderPath)
+{
+	return !InFolderPath.empty() && InFolderPath != "All" && InFolderPath != "Content";
+}
+
+bool CanMoveFolderInto(const std::string& InSourceFolderPath, const std::string& InTargetFolderPath)
+{
+	if (!IsDraggableFolderPath(InSourceFolderPath))
+	{
+		return false;
+	}
+
+	if (InTargetFolderPath.empty() || InTargetFolderPath == "All")
+	{
+		return false;
+	}
+
+	if (InSourceFolderPath == InTargetFolderPath)
+	{
+		return false;
+	}
+
+	if (IsSubfolderPath(InTargetFolderPath, InSourceFolderPath))
+	{
+		return false;
+	}
+
+	return true;
+}
+
+bool CanDropFoldersOnTarget(
+	const std::vector<std::string>& InSourceFolderPaths,
+	const std::string& InTargetFolderPath)
+{
+	const std::vector<std::string> RootFolderPaths = DeduplicateNestedFolderPaths(InSourceFolderPaths);
+	if (RootFolderPaths.empty())
+	{
+		return false;
+	}
+
+	for (const std::string& SourceFolderPath : RootFolderPaths)
+	{
+		if (!CanMoveFolderInto(SourceFolderPath, InTargetFolderPath))
+		{
+			return false;
+		}
+	}
+
+	return true;
+}
+
+QPixmap BuildFolderDragPixmap(int InItemCount)
+{
+	constexpr int kDragPixmapSize = 48;
+	QPixmap DragPixmap(kDragPixmapSize, kDragPixmapSize);
+	DragPixmap.fill(Qt::transparent);
+	{
+		QPainter PixmapPainter(&DragPixmap);
+		PixmapPainter.setRenderHint(QPainter::Antialiasing, true);
+		PixmapPainter.setPen(QPen(QColor("#c9a227"), 2));
+		PixmapPainter.setBrush(QColor("#5c4a12"));
+		PixmapPainter.drawRoundedRect(DragPixmap.rect().adjusted(1, 1, -1, -1), 4, 4);
+		PixmapPainter.setPen(QColor("#f0f0f0"));
+		PixmapPainter.drawText(DragPixmap.rect().adjusted(4, 4, -4, -4), Qt::AlignCenter, QObject::tr("Folder"));
+
+		if (InItemCount > 1)
+		{
+			PixmapPainter.setPen(Qt::white);
+			QFont CountFont = PixmapPainter.font();
+			CountFont.setBold(true);
+			CountFont.setPointSize(9);
+			PixmapPainter.setFont(CountFont);
+			PixmapPainter.drawText(
+				DragPixmap.rect().adjusted(2, 2, -2, -2),
+				Qt::AlignRight | Qt::AlignTop,
+				QString::number(InItemCount));
+		}
+	}
+	return DragPixmap;
+}
+
+QPoint GetMouseEventGlobalPos(const QMouseEvent* InEvent)
+{
+	if (InEvent == nullptr)
+	{
+		return {};
+	}
+
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+	return InEvent->globalPosition().toPoint();
+#else
+	return InEvent->globalPos();
+#endif
+}
+
+QPoint GetContextMenuEventGlobalPos(const QContextMenuEvent* InEvent)
+{
+	if (InEvent == nullptr)
+	{
+		return {};
+	}
+
+	return InEvent->globalPos();
 }
 
 std::filesystem::path QStringToFsPath(const QString& InPath)
@@ -133,6 +310,17 @@ bool ExtractImportableModelFiles(const QList<QUrl>& InFileUrls, std::vector<std:
 	}
 
 	return !OutPaths->empty();
+}
+
+bool HasImportableModelFileMimeData(const QMimeData* InMimeData)
+{
+	if (InMimeData == nullptr || !InMimeData->hasUrls())
+	{
+		return false;
+	}
+
+	std::vector<std::filesystem::path> ImportablePaths;
+	return ExtractImportableModelFiles(InMimeData->urls(), &ImportablePaths);
 }
 
 uint64_t CombineFingerprint(uint64_t InSeed, uint64_t InValue)
@@ -233,11 +421,108 @@ public:
 	{
 		setAcceptDrops(true);
 		setDropIndicatorShown(false);
+		setDragEnabled(true);
+		setDragDropMode(QAbstractItemView::DragDrop);
+		setDefaultDropAction(Qt::CopyAction);
+		setSelectionMode(QAbstractItemView::ExtendedSelection);
+		setSelectionBehavior(QAbstractItemView::SelectRows);
+		setFocusPolicy(Qt::StrongFocus);
+		viewport()->installEventFilter(this);
 	}
 
-	std::function<void(const std::string& InTargetFolderPath, const std::string& InSoftObjectPath)> AssetDropHandler;
+	std::function<void(
+		const std::string& InTargetFolderPath,
+		const std::vector<std::string>& InSoftObjectPaths,
+		const std::vector<std::string>& InFolderPaths)> ItemDropHandler;
+	std::function<void()> DeleteRequestedHandler;
 
 protected:
+	void CollectItemsInRect(const QRect& InViewportRect, QList<QTreeWidgetItem*>* OutItems) const
+	{
+		if (OutItems == nullptr || InViewportRect.isEmpty())
+		{
+			return;
+		}
+
+		std::function<void(QTreeWidgetItem*)> VisitItem;
+		VisitItem = [&](QTreeWidgetItem* InItem)
+		{
+			if (InItem == nullptr)
+			{
+				return;
+			}
+
+			if (visualItemRect(InItem).intersects(InViewportRect))
+			{
+				OutItems->push_back(InItem);
+			}
+
+			for (int ChildIndex = 0; ChildIndex < InItem->childCount(); ++ChildIndex)
+			{
+				VisitItem(InItem->child(ChildIndex));
+			}
+		};
+
+		for (int TopIndex = 0; TopIndex < topLevelItemCount(); ++TopIndex)
+		{
+			VisitItem(topLevelItem(TopIndex));
+		}
+	}
+
+	void ApplyRubberBandSelection(const QRect& InBandRect, Qt::KeyboardModifiers InModifiers)
+	{
+		constexpr int kClickThresholdPx = 4;
+		if (InBandRect.width() < kClickThresholdPx && InBandRect.height() < kClickThresholdPx)
+		{
+			if ((InModifiers & Qt::ControlModifier) == 0)
+			{
+				clearSelection();
+				setCurrentItem(nullptr);
+			}
+			return;
+		}
+
+		QList<QTreeWidgetItem*> MatchedItems;
+		CollectItemsInRect(InBandRect, &MatchedItems);
+		if (MatchedItems.isEmpty())
+		{
+			if ((InModifiers & Qt::ControlModifier) == 0)
+			{
+				clearSelection();
+				setCurrentItem(nullptr);
+			}
+			return;
+		}
+
+		QItemSelection NewSelection;
+		for (QTreeWidgetItem* Item : MatchedItems)
+		{
+			if (Item == nullptr)
+			{
+				continue;
+			}
+
+			const QModelIndex Index = indexFromItem(Item);
+			if (Index.isValid())
+			{
+				NewSelection.select(Index, Index);
+			}
+		}
+
+		QItemSelectionModel::SelectionFlags SelectionFlags = QItemSelectionModel::Select;
+		if ((InModifiers & Qt::ControlModifier) == 0)
+		{
+			SelectionFlags |= QItemSelectionModel::Clear;
+		}
+
+		selectionModel()->select(NewSelection, SelectionFlags);
+		if (!MatchedItems.isEmpty())
+		{
+			setCurrentItem(MatchedItems.last());
+		}
+		viewport()->setFocus(Qt::MouseFocusReason);
+	}
+
 	bool IsValidAssetDropTargetItem(const QTreeWidgetItem* InItem) const
 	{
 		if (InItem == nullptr)
@@ -279,13 +564,42 @@ protected:
 		viewport()->update();
 	}
 
+	bool IsValidItemDropTarget(const QTreeWidgetItem* InItem, const QMimeData* InMimeData) const
+	{
+		if (!IsValidAssetDropTargetItem(InItem) || InMimeData == nullptr)
+		{
+			return false;
+		}
+
+		const std::string TargetFolderPath = InItem->data(0, Qt::UserRole).toString().toStdString();
+		if (InMimeData->hasFormat(kFolderPathMimeType))
+		{
+			const std::vector<std::string> SourceFolderPaths = ExtractFolderPathsFromMimeData(InMimeData);
+			if (!CanDropFoldersOnTarget(SourceFolderPaths, TargetFolderPath))
+			{
+				return false;
+			}
+		}
+
+		return true;
+	}
+
 	void dragEnterEvent(QDragEnterEvent* InEvent) override
 	{
-		if (InEvent->mimeData()->hasFormat(kSoftObjectPathMimeType))
+		if (HasContentBrowserDropMimeData(InEvent->mimeData()))
 		{
-			InEvent->setDropAction(Qt::CopyAction);
-			InEvent->accept();
-			UpdateAssetDropHoverHighlight(itemAt(InEvent->position().toPoint()));
+			QTreeWidgetItem* TargetItem = itemAt(InEvent->position().toPoint());
+			if (IsValidItemDropTarget(TargetItem, InEvent->mimeData()))
+			{
+				InEvent->setDropAction(Qt::CopyAction);
+				InEvent->accept();
+				UpdateAssetDropHoverHighlight(TargetItem);
+			}
+			else
+			{
+				ClearAssetDropHoverHighlight();
+				InEvent->ignore();
+			}
 			return;
 		}
 
@@ -294,10 +608,10 @@ protected:
 
 	void dragMoveEvent(QDragMoveEvent* InEvent) override
 	{
-		if (InEvent->mimeData()->hasFormat(kSoftObjectPathMimeType))
+		if (HasContentBrowserDropMimeData(InEvent->mimeData()))
 		{
 			QTreeWidgetItem* TargetItem = itemAt(InEvent->position().toPoint());
-			if (IsValidAssetDropTargetItem(TargetItem))
+			if (IsValidItemDropTarget(TargetItem, InEvent->mimeData()))
 			{
 				InEvent->setDropAction(Qt::CopyAction);
 				InEvent->accept();
@@ -324,33 +638,200 @@ protected:
 	{
 		ClearAssetDropHoverHighlight();
 
-		if (!InEvent->mimeData()->hasFormat(kSoftObjectPathMimeType))
+		if (!HasContentBrowserDropMimeData(InEvent->mimeData()))
 		{
 			QTreeWidget::dropEvent(InEvent);
 			return;
 		}
 
 		QTreeWidgetItem* TargetItem = itemAt(InEvent->position().toPoint());
-		if (!IsValidAssetDropTargetItem(TargetItem))
+		if (!IsValidItemDropTarget(TargetItem, InEvent->mimeData()))
 		{
 			InEvent->ignore();
 			return;
 		}
 
 		const std::string TargetFolderPath = TargetItem->data(0, Qt::UserRole).toString().toStdString();
-		const std::string SoftPath =
-			QString::fromUtf8(InEvent->mimeData()->data(kSoftObjectPathMimeType)).toStdString();
-		if (AssetDropHandler)
+		const std::vector<std::string> SoftPaths = ExtractSoftObjectPathsFromMimeData(InEvent->mimeData());
+		const std::vector<std::string> FolderPaths = ExtractFolderPathsFromMimeData(InEvent->mimeData());
+		if (ItemDropHandler && (!SoftPaths.empty() || !FolderPaths.empty()))
 		{
-			AssetDropHandler(TargetFolderPath, SoftPath);
+			ItemDropHandler(TargetFolderPath, SoftPaths, FolderPaths);
 		}
 
 		InEvent->setDropAction(Qt::CopyAction);
 		InEvent->accept();
 	}
 
+	void startDrag(Qt::DropActions InSupportedActions) override
+	{
+		QList<QTreeWidgetItem*> DragItems = selectedItems();
+		if (DragItems.isEmpty())
+		{
+			QTreeWidgetItem* CurrentItem = currentItem();
+			if (CurrentItem == nullptr)
+			{
+				return;
+			}
+
+			DragItems = {CurrentItem};
+		}
+
+		QStringList FolderPaths;
+		for (QTreeWidgetItem* Item : DragItems)
+		{
+			if (Item == nullptr)
+			{
+				continue;
+			}
+
+			const std::string FolderPath = Item->data(0, Qt::UserRole).toString().toStdString();
+			if (!IsDraggableFolderPath(FolderPath))
+			{
+				continue;
+			}
+
+			const QString QFolderPath = QString::fromStdString(FolderPath);
+			if (!FolderPaths.contains(QFolderPath))
+			{
+				FolderPaths.push_back(QFolderPath);
+			}
+		}
+
+		if (FolderPaths.isEmpty())
+		{
+			return;
+		}
+
+		auto* MimeData = new QMimeData();
+		MimeData->setData(kFolderPathMimeType, FolderPaths.join('\n').toUtf8());
+
+		auto* Drag = new QDrag(this);
+		Drag->setMimeData(MimeData);
+		Drag->setPixmap(BuildFolderDragPixmap(FolderPaths.size()));
+		Drag->setHotSpot(QPoint(24, 24));
+		Drag->exec(Qt::CopyAction, Qt::CopyAction);
+	}
+
+	bool eventFilter(QObject* InWatched, QEvent* InEvent) override
+	{
+		if (InWatched != viewport())
+		{
+			return QTreeWidget::eventFilter(InWatched, InEvent);
+		}
+
+		if (InEvent->type() == QEvent::MouseButtonPress)
+		{
+			auto* MouseEvent = static_cast<QMouseEvent*>(InEvent);
+			if (MouseEvent->button() == Qt::RightButton)
+			{
+				const QPoint ViewportPos = MouseEvent->pos();
+				QTreeWidgetItem* Item = itemAt(ViewportPos);
+				if (Item != nullptr && selectedItems().contains(Item))
+				{
+					setCurrentItem(Item);
+					MouseEvent->accept();
+					return true;
+				}
+			}
+		}
+
+		return QTreeWidget::eventFilter(InWatched, InEvent);
+	}
+
+	void contextMenuEvent(QContextMenuEvent* InEvent) override
+	{
+		const QPoint ViewportPos = viewport()->mapFromGlobal(GetContextMenuEventGlobalPos(InEvent));
+		QTreeWidgetItem* Item = itemAt(ViewportPos);
+		if (Item != nullptr)
+		{
+			if (!selectedItems().contains(Item))
+			{
+				clearSelection();
+				setCurrentItem(Item);
+			}
+			else
+			{
+				setCurrentItem(Item);
+			}
+		}
+
+		emit customContextMenuRequested(ViewportPos);
+		InEvent->accept();
+	}
+
+	void keyPressEvent(QKeyEvent* InEvent) override
+	{
+		if (InEvent != nullptr && InEvent->key() == Qt::Key_Delete && DeleteRequestedHandler)
+		{
+			DeleteRequestedHandler();
+			InEvent->accept();
+			return;
+		}
+
+		QTreeWidget::keyPressEvent(InEvent);
+	}
+
+	void mousePressEvent(QMouseEvent* InEvent) override
+	{
+		if (InEvent->button() == Qt::LeftButton)
+		{
+			const QPoint ViewportPos = viewport()->mapFromGlobal(GetMouseEventGlobalPos(InEvent));
+			if (itemAt(ViewportPos) == nullptr)
+			{
+				viewport()->setFocus(Qt::MouseFocusReason);
+				m_b_rubber_band_selecting_ = true;
+				m_rubber_band_origin_ = ViewportPos;
+				if (m_rubber_band_ == nullptr)
+				{
+					m_rubber_band_ = new QRubberBand(QRubberBand::Rectangle, viewport());
+				}
+				m_rubber_band_->setGeometry(QRect(m_rubber_band_origin_, QSize()));
+				m_rubber_band_->show();
+				InEvent->accept();
+				return;
+			}
+		}
+
+		QTreeWidget::mousePressEvent(InEvent);
+	}
+
+	void mouseMoveEvent(QMouseEvent* InEvent) override
+	{
+		if (m_b_rubber_band_selecting_ && m_rubber_band_ != nullptr)
+		{
+			const QPoint ViewportPos = viewport()->mapFromGlobal(GetMouseEventGlobalPos(InEvent));
+			m_rubber_band_->setGeometry(QRect(m_rubber_band_origin_, ViewportPos).normalized());
+			InEvent->accept();
+			return;
+		}
+
+		QTreeWidget::mouseMoveEvent(InEvent);
+	}
+
+	void mouseReleaseEvent(QMouseEvent* InEvent) override
+	{
+		if (m_b_rubber_band_selecting_ && InEvent->button() == Qt::LeftButton)
+		{
+			const QRect BandRect = m_rubber_band_ != nullptr ? m_rubber_band_->geometry() : QRect();
+			if (m_rubber_band_ != nullptr)
+			{
+				m_rubber_band_->hide();
+			}
+			m_b_rubber_band_selecting_ = false;
+			ApplyRubberBandSelection(BandRect, InEvent->modifiers());
+			InEvent->accept();
+			return;
+		}
+
+		QTreeWidget::mouseReleaseEvent(InEvent);
+	}
+
 private:
 	QTreeWidgetItem* m_asset_drop_hover_item_ = nullptr;
+	bool m_b_rubber_band_selecting_ = false;
+	QPoint m_rubber_band_origin_;
+	QRubberBand* m_rubber_band_ = nullptr;
 };
 
 class AssetBrowserListView final : public QListView
@@ -359,13 +840,98 @@ public:
 	explicit AssetBrowserListView(QWidget* InParent = nullptr)
 		: QListView(InParent)
 	{
+		setDropIndicatorShown(false);
+		setMouseTracking(true);
+		viewport()->setMouseTracking(true);
+		viewport()->setProperty("folderDropHoverRow", kAssetDragSourceNone);
+		SetItemHoverRow(kAssetDragSourceNone);
 		viewport()->installEventFilter(this);
+
+		m_tooltip_show_timer_ = new QTimer(this);
+		m_tooltip_show_timer_->setSingleShot(true);
+		m_tooltip_show_timer_->setInterval(350);
+		connect(m_tooltip_show_timer_, &QTimer::timeout, this, [this]()
+		{
+			ShowPendingItemTooltip();
+		});
+	}
+
+	void DismissItemHover()
+	{
+		ClearItemHoverState();
 	}
 
 	std::function<void(const QList<QUrl>&)> ExternalDropHandler;
-	std::function<void(const std::string& InTargetFolderPath, const std::string& InSoftObjectPath)> AssetDropHandler;
+	std::function<void(
+		const std::string& InTargetFolderPath,
+		const std::vector<std::string>& InSoftObjectPaths,
+		const std::vector<std::string>& InFolderPaths)> ItemDropHandler;
+	std::function<void()> DeleteRequestedHandler;
 
 protected:
+	QModelIndexList CollectIndexesInRect(const QRect& InViewportRect) const
+	{
+		QModelIndexList MatchedIndexes;
+		if (model() == nullptr || InViewportRect.isEmpty())
+		{
+			return MatchedIndexes;
+		}
+
+		for (int Row = 0; Row < model()->rowCount(); ++Row)
+		{
+			const QModelIndex RowIndex = model()->index(Row, 0);
+			if (RowIndex.isValid() && visualRect(RowIndex).intersects(InViewportRect))
+			{
+				MatchedIndexes.push_back(RowIndex);
+			}
+		}
+
+		return MatchedIndexes;
+	}
+
+	void ApplyRubberBandSelection(const QRect& InBandRect, Qt::KeyboardModifiers InModifiers)
+	{
+		constexpr int kClickThresholdPx = 4;
+		if (InBandRect.width() < kClickThresholdPx && InBandRect.height() < kClickThresholdPx)
+		{
+			if ((InModifiers & Qt::ControlModifier) == 0)
+			{
+				clearSelection();
+				setCurrentIndex(QModelIndex());
+			}
+			return;
+		}
+
+		const QModelIndexList MatchedIndexes = CollectIndexesInRect(InBandRect);
+		if (MatchedIndexes.isEmpty())
+		{
+			if ((InModifiers & Qt::ControlModifier) == 0)
+			{
+				clearSelection();
+				setCurrentIndex(QModelIndex());
+			}
+			return;
+		}
+
+		QItemSelection NewSelection;
+		for (const QModelIndex& Index : MatchedIndexes)
+		{
+			NewSelection.select(Index, Index);
+		}
+
+		QItemSelectionModel::SelectionFlags SelectionFlags = QItemSelectionModel::Select;
+		if ((InModifiers & Qt::ControlModifier) == 0)
+		{
+			SelectionFlags |= QItemSelectionModel::Clear;
+		}
+
+		selectionModel()->select(NewSelection, SelectionFlags);
+		selectionModel()->setCurrentIndex(
+			MatchedIndexes.last(),
+			QItemSelectionModel::Current);
+		viewport()->setFocus(Qt::MouseFocusReason);
+	}
+
 	QModelIndex FindFolderIndexAt(const QPoint& InViewportPos) const
 	{
 		const QModelIndex HitIndex = indexAt(InViewportPos);
@@ -396,30 +962,181 @@ protected:
 		return {};
 	}
 
-	bool IsFolderDropTargetAt(const QPoint& InViewportPos) const
-	{
-		return FindFolderIndexAt(InViewportPos).isValid();
-	}
-
-	void AcceptAssetMoveDrop(QDropEvent* InEvent, const QPoint& InViewportPos)
+	bool IsValidItemDropTargetAt(const QPoint& InViewportPos, const QMimeData* InMimeData) const
 	{
 		const QModelIndex Index = FindFolderIndexAt(InViewportPos);
-		if (!Index.isValid())
+		if (!Index.isValid() || InMimeData == nullptr)
 		{
-			return;
+			return false;
 		}
 
 		const std::string TargetFolderPath =
 			Index.data(static_cast<int>(EAssetListRole::FolderPath)).toString().toStdString();
-		const std::string SoftPath =
-			QString::fromUtf8(InEvent->mimeData()->data(kSoftObjectPathMimeType)).toStdString();
-		if (!TargetFolderPath.empty() && AssetDropHandler)
+		if (TargetFolderPath.empty())
 		{
-			AssetDropHandler(TargetFolderPath, SoftPath);
+			return false;
+		}
+
+		if (InMimeData->hasFormat(kFolderPathMimeType))
+		{
+			const std::vector<std::string> SourceFolderPaths = ExtractFolderPathsFromMimeData(InMimeData);
+			if (!CanDropFoldersOnTarget(SourceFolderPaths, TargetFolderPath))
+			{
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	void ClearFolderDropHoverRow()
+	{
+		if (viewport()->property("folderDropHoverRow").toInt() == kAssetDragSourceNone)
+		{
+			return;
+		}
+
+		viewport()->setProperty("folderDropHoverRow", kAssetDragSourceNone);
+		viewport()->update();
+	}
+
+	void UpdateFolderDropHoverAt(const QPoint& InViewportPos)
+	{
+		const QModelIndex Index = FindFolderIndexAt(InViewportPos);
+		const int HoverRow = Index.isValid() ? Index.row() : kAssetDragSourceNone;
+		if (viewport()->property("folderDropHoverRow").toInt() == HoverRow)
+		{
+			return;
+		}
+
+		viewport()->setProperty("folderDropHoverRow", HoverRow);
+		viewport()->update();
+	}
+
+	void AcceptItemMoveDrop(QDropEvent* InEvent, const QPoint& InViewportPos)
+	{
+		if (!IsValidItemDropTargetAt(InViewportPos, InEvent->mimeData()))
+		{
+			return;
+		}
+
+		const QModelIndex Index = FindFolderIndexAt(InViewportPos);
+		const std::string TargetFolderPath =
+			Index.data(static_cast<int>(EAssetListRole::FolderPath)).toString().toStdString();
+		const std::vector<std::string> SoftPaths = ExtractSoftObjectPathsFromMimeData(InEvent->mimeData());
+		const std::vector<std::string> FolderPaths = ExtractFolderPathsFromMimeData(InEvent->mimeData());
+		if (!TargetFolderPath.empty() && ItemDropHandler && (!SoftPaths.empty() || !FolderPaths.empty()))
+		{
+			ItemDropHandler(TargetFolderPath, SoftPaths, FolderPaths);
 		}
 
 		InEvent->setDropAction(Qt::CopyAction);
 		InEvent->accept();
+	}
+
+	void HandleContentBrowserDragEnter(QDragEnterEvent* InEvent)
+	{
+		const QPoint ViewportPos = InEvent->position().toPoint();
+		if (IsValidItemDropTargetAt(ViewportPos, InEvent->mimeData()))
+		{
+			InEvent->setDropAction(Qt::CopyAction);
+			InEvent->accept();
+			UpdateFolderDropHoverAt(ViewportPos);
+			return;
+		}
+
+		ClearFolderDropHoverRow();
+		InEvent->accept();
+	}
+
+	void HandleContentBrowserDragMove(QDragMoveEvent* InEvent)
+	{
+		const QPoint ViewportPos = InEvent->position().toPoint();
+		if (IsValidItemDropTargetAt(ViewportPos, InEvent->mimeData()))
+		{
+			InEvent->setDropAction(Qt::CopyAction);
+			InEvent->accept();
+			UpdateFolderDropHoverAt(ViewportPos);
+			return;
+		}
+
+		ClearFolderDropHoverRow();
+		InEvent->ignore();
+	}
+
+	void HandleContentBrowserDrop(QDropEvent* InEvent)
+	{
+		ClearFolderDropHoverRow();
+		const QPoint ViewportPos = InEvent->position().toPoint();
+		if (IsValidItemDropTargetAt(ViewportPos, InEvent->mimeData()))
+		{
+			AcceptItemMoveDrop(InEvent, ViewportPos);
+			return;
+		}
+
+		InEvent->ignore();
+	}
+
+	void dragEnterEvent(QDragEnterEvent* InEvent) override
+	{
+		if (HasImportableModelFileMimeData(InEvent->mimeData()))
+		{
+			InEvent->acceptProposedAction();
+			return;
+		}
+
+		if (HasContentBrowserDropMimeData(InEvent->mimeData()))
+		{
+			HandleContentBrowserDragEnter(InEvent);
+			return;
+		}
+
+		QListView::dragEnterEvent(InEvent);
+	}
+
+	void dragMoveEvent(QDragMoveEvent* InEvent) override
+	{
+		if (HasImportableModelFileMimeData(InEvent->mimeData()))
+		{
+			InEvent->acceptProposedAction();
+			return;
+		}
+
+		if (HasContentBrowserDropMimeData(InEvent->mimeData()))
+		{
+			HandleContentBrowserDragMove(InEvent);
+			return;
+		}
+
+		QListView::dragMoveEvent(InEvent);
+	}
+
+	void dragLeaveEvent(QDragLeaveEvent* InEvent) override
+	{
+		ClearFolderDropHoverRow();
+		DismissItemHover();
+		QListView::dragLeaveEvent(InEvent);
+	}
+
+	void dropEvent(QDropEvent* InEvent) override
+	{
+		if (HasImportableModelFileMimeData(InEvent->mimeData()))
+		{
+			if (ExternalDropHandler)
+			{
+				ExternalDropHandler(InEvent->mimeData()->urls());
+			}
+			InEvent->acceptProposedAction();
+			return;
+		}
+
+		if (HasContentBrowserDropMimeData(InEvent->mimeData()))
+		{
+			HandleContentBrowserDrop(InEvent);
+			return;
+		}
+
+		QListView::dropEvent(InEvent);
 	}
 
 	bool eventFilter(QObject* InWatched, QEvent* InEvent) override
@@ -431,135 +1148,262 @@ protected:
 
 		if (InEvent->type() == QEvent::DragEnter)
 		{
-			auto* DragEnterEvent = static_cast<QDragEnterEvent*>(InEvent);
-			std::vector<std::filesystem::path> ImportablePaths;
-			if (DragEnterEvent->mimeData()->hasUrls()
-				&& ExtractImportableModelFiles(DragEnterEvent->mimeData()->urls(), &ImportablePaths))
-			{
-				DragEnterEvent->acceptProposedAction();
-				return true;
-			}
-
-			if (DragEnterEvent->mimeData()->hasFormat(kSoftObjectPathMimeType))
-			{
-				DragEnterEvent->setDropAction(Qt::CopyAction);
-				DragEnterEvent->accept();
-				return true;
-			}
-
 			return false;
 		}
 
 		if (InEvent->type() == QEvent::DragMove)
 		{
-			auto* DragMoveEvent = static_cast<QDragMoveEvent*>(InEvent);
-			std::vector<std::filesystem::path> ImportablePaths;
-			if (DragMoveEvent->mimeData()->hasUrls()
-				&& ExtractImportableModelFiles(DragMoveEvent->mimeData()->urls(), &ImportablePaths))
-			{
-				DragMoveEvent->acceptProposedAction();
-				return true;
-			}
-
-			if (DragMoveEvent->mimeData()->hasFormat(kSoftObjectPathMimeType))
-			{
-				if (IsFolderDropTargetAt(DragMoveEvent->position().toPoint()))
-				{
-					DragMoveEvent->setDropAction(Qt::CopyAction);
-					DragMoveEvent->accept();
-				}
-				else
-				{
-					DragMoveEvent->ignore();
-				}
-				return true;
-			}
-
 			return false;
 		}
 
 		if (InEvent->type() == QEvent::Drop)
 		{
-			auto* DropEvent = static_cast<QDropEvent*>(InEvent);
-			std::vector<std::filesystem::path> ImportablePaths;
-			if (DropEvent->mimeData()->hasUrls()
-				&& ExtractImportableModelFiles(DropEvent->mimeData()->urls(), &ImportablePaths))
-			{
-				if (ExternalDropHandler)
-				{
-					ExternalDropHandler(DropEvent->mimeData()->urls());
-				}
-				DropEvent->acceptProposedAction();
-				return true;
-			}
-
-			if (DropEvent->mimeData()->hasFormat(kSoftObjectPathMimeType))
-			{
-				if (IsFolderDropTargetAt(DropEvent->position().toPoint()))
-				{
-					AcceptAssetMoveDrop(DropEvent, DropEvent->position().toPoint());
-				}
-				else
-				{
-					DropEvent->ignore();
-				}
-				return true;
-			}
-
 			return false;
+		}
+
+		if (InEvent->type() == QEvent::Leave)
+		{
+			DismissItemHover();
+			return false;
+		}
+
+		if (InEvent->type() == QEvent::Wheel)
+		{
+			HideItemTooltip();
+			m_tooltip_show_timer_->stop();
+			return false;
+		}
+
+		if (InEvent->type() == QEvent::MouseMove)
+		{
+			auto* MouseEvent = static_cast<QMouseEvent*>(InEvent);
+			UpdateItemHoverAt(MouseEvent->pos());
+			return false;
+		}
+
+		if (InEvent->type() == QEvent::MouseButtonPress)
+		{
+			auto* MouseEvent = static_cast<QMouseEvent*>(InEvent);
+			if (MouseEvent->button() == Qt::RightButton)
+			{
+				const QPoint ViewportPos = MouseEvent->pos();
+				const QModelIndex Index = indexAt(ViewportPos);
+				if (Index.isValid() && selectionModel() != nullptr && selectionModel()->isSelected(Index))
+				{
+					selectionModel()->setCurrentIndex(Index, QItemSelectionModel::Current);
+					MouseEvent->accept();
+					return true;
+				}
+			}
 		}
 
 		return QListView::eventFilter(InWatched, InEvent);
 	}
 
+	void contextMenuEvent(QContextMenuEvent* InEvent) override
+	{
+		const QPoint ViewportPos = viewport()->mapFromGlobal(GetContextMenuEventGlobalPos(InEvent));
+		const QModelIndex Index = indexAt(ViewportPos);
+		if (Index.isValid() && selectionModel() != nullptr)
+		{
+			if (!selectionModel()->isSelected(Index))
+			{
+				selectionModel()->clearSelection();
+				selectionModel()->select(
+					Index,
+					QItemSelectionModel::Select | QItemSelectionModel::Current);
+			}
+			else
+			{
+				selectionModel()->setCurrentIndex(Index, QItemSelectionModel::Current);
+			}
+		}
+
+		emit customContextMenuRequested(ViewportPos);
+		InEvent->accept();
+	}
+
+	void keyPressEvent(QKeyEvent* InEvent) override
+	{
+		if (InEvent != nullptr && InEvent->key() == Qt::Key_Delete)
+		{
+			if (DeleteRequestedHandler)
+			{
+				DeleteRequestedHandler();
+				InEvent->accept();
+				return;
+			}
+		}
+
+		QListView::keyPressEvent(InEvent);
+	}
+
+	void mousePressEvent(QMouseEvent* InEvent) override
+	{
+		if (InEvent->button() == Qt::LeftButton)
+		{
+			const QPoint ViewportPos = viewport()->mapFromGlobal(GetMouseEventGlobalPos(InEvent));
+			if (!indexAt(ViewportPos).isValid())
+			{
+				DismissItemHover();
+				viewport()->setFocus(Qt::MouseFocusReason);
+				m_b_rubber_band_selecting_ = true;
+				m_rubber_band_origin_ = ViewportPos;
+				if (m_rubber_band_ == nullptr)
+				{
+					m_rubber_band_ = new QRubberBand(QRubberBand::Rectangle, viewport());
+				}
+				m_rubber_band_->setGeometry(QRect(m_rubber_band_origin_, QSize()));
+				m_rubber_band_->show();
+				InEvent->accept();
+				return;
+			}
+		}
+
+		QListView::mousePressEvent(InEvent);
+	}
+
+	void mouseMoveEvent(QMouseEvent* InEvent) override
+	{
+		const QPoint ViewportPos = viewport()->mapFromGlobal(GetMouseEventGlobalPos(InEvent));
+		if (m_b_rubber_band_selecting_ && m_rubber_band_ != nullptr)
+		{
+			m_rubber_band_->setGeometry(QRect(m_rubber_band_origin_, ViewportPos).normalized());
+			InEvent->accept();
+			return;
+		}
+
+		UpdateItemHoverAt(ViewportPos);
+		QListView::mouseMoveEvent(InEvent);
+	}
+
+	void mouseReleaseEvent(QMouseEvent* InEvent) override
+	{
+		if (m_b_rubber_band_selecting_ && InEvent->button() == Qt::LeftButton)
+		{
+			const QRect BandRect = m_rubber_band_ != nullptr ? m_rubber_band_->geometry() : QRect();
+			if (m_rubber_band_ != nullptr)
+			{
+				m_rubber_band_->hide();
+			}
+			m_b_rubber_band_selecting_ = false;
+			ApplyRubberBandSelection(BandRect, InEvent->modifiers());
+			InEvent->accept();
+			return;
+		}
+
+		QListView::mouseReleaseEvent(InEvent);
+	}
+
 	void startDrag(Qt::DropActions InSupportedActions) override
 	{
+		DismissItemHover();
 		const QModelIndex Current = currentIndex();
 		if (!Current.isValid())
 		{
 			return;
 		}
 
-		const QString SoftPath = Current.data(static_cast<int>(EAssetListRole::SoftObjectPath)).toString();
-		const QString AssetType = Current.data(static_cast<int>(EAssetListRole::AssetType)).toString();
-		if (!AssetTypeInfo::IsMeshAssetType(AssetType.toStdString()))
+		QModelIndexList DragIndexes = selectedIndexes();
+		if (DragIndexes.isEmpty() || !DragIndexes.contains(Current))
+		{
+			DragIndexes = {Current};
+		}
+
+		QStringList SoftPaths;
+		QStringList FolderPaths;
+		for (const QModelIndex& Index : DragIndexes)
+		{
+			if (!Index.isValid())
+			{
+				continue;
+			}
+
+			if (Index.data(static_cast<int>(EAssetListRole::IsFolder)).toBool())
+			{
+				const QString FolderPath = Index.data(static_cast<int>(EAssetListRole::FolderPath)).toString();
+				if (!FolderPath.isEmpty() && !FolderPaths.contains(FolderPath))
+				{
+					FolderPaths.push_back(FolderPath);
+				}
+				continue;
+			}
+
+			const QString SoftPath = Index.data(static_cast<int>(EAssetListRole::SoftObjectPath)).toString();
+			if (!SoftPath.isEmpty() && !SoftPaths.contains(SoftPath))
+			{
+				SoftPaths.push_back(SoftPath);
+			}
+		}
+
+		if (SoftPaths.isEmpty() && FolderPaths.isEmpty())
 		{
 			return;
 		}
 
 		auto* MimeData = new QMimeData();
-		MimeData->setData(kSoftObjectPathMimeType, SoftPath.toUtf8());
-		MimeData->setText(SoftPath);
-
-		const QImage Thumbnail =
-			Current.data(static_cast<int>(EAssetListRole::ThumbnailImage)).value<QImage>();
-		constexpr int kDragPixmapSize = 48;
-		QPixmap DragPixmap(kDragPixmapSize, kDragPixmapSize);
-		DragPixmap.fill(Qt::transparent);
+		if (!SoftPaths.isEmpty())
 		{
-			QPainter PixmapPainter(&DragPixmap);
-			PixmapPainter.setRenderHint(QPainter::Antialiasing, true);
-			PixmapPainter.setPen(QPen(QColor("#4da3ff"), 2));
-			PixmapPainter.setBrush(QColor("#2c5d87"));
-			PixmapPainter.drawRoundedRect(DragPixmap.rect().adjusted(1, 1, -1, -1), 4, 4);
-			const QRect ImageRect = DragPixmap.rect().adjusted(4, 4, -4, -4);
-			if (!Thumbnail.isNull())
+			const QString EncodedSoftPaths = SoftPaths.join('\n');
+			MimeData->setData(kSoftObjectPathMimeType, EncodedSoftPaths.toUtf8());
+			MimeData->setText(EncodedSoftPaths);
+		}
+		if (!FolderPaths.isEmpty())
+		{
+			MimeData->setData(kFolderPathMimeType, FolderPaths.join('\n').toUtf8());
+		}
+
+		const int DragItemCount = SoftPaths.size() + FolderPaths.size();
+		QPixmap DragPixmap;
+		if (SoftPaths.isEmpty())
+		{
+			DragPixmap = BuildFolderDragPixmap(DragItemCount);
+		}
+		else
+		{
+			const QImage Thumbnail =
+				Current.data(static_cast<int>(EAssetListRole::ThumbnailImage)).value<QImage>();
+			constexpr int kDragPixmapSize = 48;
+			DragPixmap = QPixmap(kDragPixmapSize, kDragPixmapSize);
+			DragPixmap.fill(Qt::transparent);
 			{
-				PixmapPainter.drawImage(
-					ImageRect,
-					Thumbnail.scaled(ImageRect.size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
-			}
-			else
-			{
-				PixmapPainter.setPen(QColor("#f0f0f0"));
-				PixmapPainter.drawText(ImageRect, Qt::AlignCenter, tr("Mesh"));
+				QPainter PixmapPainter(&DragPixmap);
+				PixmapPainter.setRenderHint(QPainter::Antialiasing, true);
+				PixmapPainter.setPen(QPen(QColor("#4da3ff"), 2));
+				PixmapPainter.setBrush(QColor("#2c5d87"));
+				PixmapPainter.drawRoundedRect(DragPixmap.rect().adjusted(1, 1, -1, -1), 4, 4);
+				const QRect ImageRect = DragPixmap.rect().adjusted(4, 4, -4, -4);
+				if (!Thumbnail.isNull())
+				{
+					PixmapPainter.drawImage(
+						ImageRect,
+						Thumbnail.scaled(ImageRect.size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+				}
+				else
+				{
+					PixmapPainter.setPen(QColor("#f0f0f0"));
+					PixmapPainter.drawText(ImageRect, Qt::AlignCenter, tr("Asset"));
+				}
+
+				if (DragItemCount > 1)
+				{
+					PixmapPainter.setPen(Qt::white);
+					QFont CountFont = PixmapPainter.font();
+					CountFont.setBold(true);
+					CountFont.setPointSize(9);
+					PixmapPainter.setFont(CountFont);
+					PixmapPainter.drawText(
+						DragPixmap.rect().adjusted(2, 2, -2, -2),
+						Qt::AlignRight | Qt::AlignTop,
+						QString::number(DragItemCount));
+				}
 			}
 		}
 
 		auto* Drag = new QDrag(this);
 		Drag->setMimeData(MimeData);
 		Drag->setPixmap(DragPixmap);
-		Drag->setHotSpot(QPoint(kDragPixmapSize / 2, kDragPixmapSize / 2));
+		Drag->setHotSpot(QPoint(DragPixmap.width() / 2, DragPixmap.height() / 2));
 
 		viewport()->setProperty("assetDragSourceRow", Current.row());
 		viewport()->update();
@@ -574,6 +1418,128 @@ protected:
 			setCurrentIndex(Current);
 		}
 	}
+
+private:
+	void HideItemTooltip()
+	{
+		if (m_item_tooltip_ != nullptr)
+		{
+			m_item_tooltip_->hide();
+		}
+	}
+
+	void SetItemHoverRow(int InHoverRow)
+	{
+		setProperty("itemHoverRow", InHoverRow);
+		viewport()->setProperty("itemHoverRow", InHoverRow);
+	}
+
+	void UpdateHoverItemPaint(int InRow)
+	{
+		if (model() == nullptr || InRow < 0)
+		{
+			return;
+		}
+
+		const QModelIndex RowIndex = model()->index(InRow, 0);
+		if (RowIndex.isValid())
+		{
+			update(visualRect(RowIndex));
+		}
+	}
+
+	void ClearItemHoverState()
+	{
+		if (m_tooltip_show_timer_ != nullptr)
+		{
+			m_tooltip_show_timer_->stop();
+		}
+		HideItemTooltip();
+		m_pending_hover_index_ = QModelIndex();
+		const int PreviousHoverRow = m_hover_row_;
+		m_hover_row_ = kAssetDragSourceNone;
+		if (PreviousHoverRow != kAssetDragSourceNone)
+		{
+			SetItemHoverRow(kAssetDragSourceNone);
+			UpdateHoverItemPaint(PreviousHoverRow);
+		}
+	}
+
+	void UpdateItemHoverAt(const QPoint& InViewportPos)
+	{
+		const QModelIndex HitIndex = indexAt(InViewportPos);
+		const int HoverRow = HitIndex.isValid() ? HitIndex.row() : kAssetDragSourceNone;
+		if (HoverRow == m_hover_row_)
+		{
+			return;
+		}
+
+		const int PreviousHoverRow = m_hover_row_;
+		m_hover_row_ = HoverRow;
+		SetItemHoverRow(HoverRow);
+		UpdateHoverItemPaint(PreviousHoverRow);
+		UpdateHoverItemPaint(HoverRow);
+
+		if (m_tooltip_show_timer_ != nullptr)
+		{
+			m_tooltip_show_timer_->stop();
+		}
+		HideItemTooltip();
+
+		if (!HitIndex.isValid())
+		{
+			m_pending_hover_index_ = QModelIndex();
+			return;
+		}
+
+		m_pending_hover_index_ = HitIndex;
+		if (m_tooltip_show_timer_ != nullptr)
+		{
+			m_tooltip_show_timer_->start();
+		}
+	}
+
+	void ShowPendingItemTooltip()
+	{
+		if (m_b_rubber_band_selecting_ || !m_pending_hover_index_.isValid()
+			|| m_hover_row_ != m_pending_hover_index_.row())
+		{
+			return;
+		}
+
+		const QModelIndex Index = m_pending_hover_index_;
+		const QString Name = Index.data(Qt::DisplayRole).toString();
+		const QString TypeName = Index.data(static_cast<int>(EAssetListRole::TypeDisplayName)).toString();
+		QString SoftPath;
+		if (Index.data(static_cast<int>(EAssetListRole::IsFolder)).toBool())
+		{
+			SoftPath = Index.data(static_cast<int>(EAssetListRole::FolderPath)).toString();
+		}
+		else
+		{
+			SoftPath = Index.data(static_cast<int>(EAssetListRole::SoftObjectPath)).toString();
+		}
+
+		if (m_item_tooltip_ == nullptr)
+		{
+			m_item_tooltip_ = new AssetBrowserItemTooltipWidget();
+		}
+
+		m_item_tooltip_->SetContent(Name, TypeName, SoftPath);
+
+		const QRect ItemRect = visualRect(Index);
+		const QPoint TopLeftGlobal = viewport()->mapToGlobal(ItemRect.topLeft());
+		const QRect ItemScreenRect(TopLeftGlobal, ItemRect.size());
+		m_item_tooltip_->ShowNearGlobalPos(QCursor::pos(), ItemScreenRect);
+	}
+
+	QRubberBand* m_rubber_band_ = nullptr;
+	QPoint m_rubber_band_origin_{};
+	bool m_b_rubber_band_selecting_ = false;
+	int m_hover_row_ = kAssetDragSourceNone;
+	QModelIndex m_pending_hover_index_;
+	QTimer* m_tooltip_show_timer_ = nullptr;
+	AssetBrowserItemTooltipWidget* m_item_tooltip_ = nullptr;
 };
 
 void PopulateTreeItem(QTreeWidgetItem* InParentItem, const FAssetFolderNode& InNode)
@@ -664,20 +1630,30 @@ void AssetBrowserPanelWidget::BuildUi()
 	m_folder_tree_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 	m_folder_tree_->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
 	m_folder_tree_->setContextMenuPolicy(Qt::CustomContextMenu);
-	static_cast<AssetFolderTreeWidget*>(m_folder_tree_)->AssetDropHandler =
-		[this](const std::string& InTargetFolderPath, const std::string& InSoftObjectPath)
+	AssetFolderTreeWidget* FolderTree = static_cast<AssetFolderTreeWidget*>(m_folder_tree_);
+	FolderTree->ItemDropHandler =
+		[this](
+			const std::string& InTargetFolderPath,
+			const std::vector<std::string>& InSoftObjectPaths,
+			const std::vector<std::string>& InFolderPaths)
 		{
-			OnAssetDroppedToFolder(InTargetFolderPath, InSoftObjectPath);
+			OnItemsDroppedToFolder(InTargetFolderPath, InSoftObjectPaths, InFolderPaths);
+		};
+	FolderTree->DeleteRequestedHandler =
+		[this]()
+		{
+			DeleteSelectedFolders();
 		};
 
 	m_asset_grid_ = new AssetBrowserListView(m_splitter_);
 	m_asset_grid_->setObjectName("AssetBrowserGrid");
 	m_asset_grid_->setViewMode(QListView::IconMode);
-	m_asset_grid_->setResizeMode(QListView::Adjust);
+	m_asset_grid_->setResizeMode(QListView::Fixed);
 	m_asset_grid_->setMovement(QListView::Static);
 	m_asset_grid_->setSpacing(8);
-	m_asset_grid_->setSelectionMode(QAbstractItemView::SingleSelection);
-	m_asset_grid_->setFocusPolicy(Qt::ClickFocus);
+	m_asset_grid_->setSelectionMode(QAbstractItemView::ExtendedSelection);
+	m_asset_grid_->setSelectionBehavior(QAbstractItemView::SelectItems);
+	m_asset_grid_->setFocusPolicy(Qt::StrongFocus);
 	m_asset_grid_->setDragEnabled(true);
 	m_asset_grid_->setAcceptDrops(true);
 	m_asset_grid_->setDragDropMode(QAbstractItemView::DragDrop);
@@ -698,10 +1674,24 @@ void AssetBrowserPanelWidget::BuildUi()
 		{
 			OnExternalFilesDropped(InFileUrls);
 		};
-	static_cast<AssetBrowserListView*>(m_asset_grid_)->AssetDropHandler =
-		[this](const std::string& InTargetFolderPath, const std::string& InSoftObjectPath)
+	static_cast<AssetBrowserListView*>(m_asset_grid_)->ItemDropHandler =
+		[this](
+			const std::string& InTargetFolderPath,
+			const std::vector<std::string>& InSoftObjectPaths,
+			const std::vector<std::string>& InFolderPaths)
 		{
-			OnAssetDroppedToFolder(InTargetFolderPath, InSoftObjectPath);
+			OnItemsDroppedToFolder(InTargetFolderPath, InSoftObjectPaths, InFolderPaths);
+		};
+	static_cast<AssetBrowserListView*>(m_asset_grid_)->DeleteRequestedHandler =
+		[this]()
+		{
+			if (!GetSelectedGridFolderPaths().empty())
+			{
+				DeleteSelectedFolders();
+				return;
+			}
+
+			DeleteSelectedAssets();
 		};
 
 	m_splitter_->addWidget(m_folder_tree_);
@@ -731,8 +1721,19 @@ void AssetBrowserPanelWidget::BuildUi()
 	m_paste_action_->setEnabled(false);
 	addAction(m_paste_action_);
 
+	m_delete_action_ = new QAction(tr("删除"), this);
+	addAction(m_delete_action_);
+
 	m_folder_tree_->installEventFilter(this);
+	if (m_folder_tree_->viewport() != nullptr)
+	{
+		m_folder_tree_->viewport()->installEventFilter(this);
+	}
 	m_asset_grid_->installEventFilter(this);
+	if (m_asset_grid_->viewport() != nullptr)
+	{
+		m_asset_grid_->viewport()->installEventFilter(this);
+	}
 
 	connect(m_search_edit_, &QLineEdit::textChanged, this, &AssetBrowserPanelWidget::OnSearchTextChanged);
 	connect(
@@ -766,18 +1767,34 @@ void AssetBrowserPanelWidget::BuildUi()
 		this,
 		&AssetBrowserPanelWidget::OnAssetGridDoubleClicked);
 	connect(
+		m_asset_grid_->selectionModel(),
+		&QItemSelectionModel::selectionChanged,
+		this,
+		&AssetBrowserPanelWidget::OnGridSelectionChanged);
+	connect(
 		m_asset_grid_->verticalScrollBar(),
 		&QScrollBar::valueChanged,
 		this,
 		&AssetBrowserPanelWidget::OnGridScrolled);
 	connect(m_rename_action_, &QAction::triggered, this, [this]()
 	{
-		if (m_asset_grid_->hasFocus())
+		if (IsFolderTreeFocused())
 		{
-			BeginRenameSelectedAsset();
+			BeginRenameSelectedFolder();
 			return;
 		}
-		BeginRenameSelectedFolder();
+
+		if (IsAssetGridFocused())
+		{
+			if (!GetSelectedGridFolderPaths().empty())
+			{
+				BeginRenameSelectedGridFolder();
+			}
+			else
+			{
+				BeginRenameSelectedAsset();
+			}
+		}
 	});
 	connect(m_copy_action_, &QAction::triggered, this, [this]()
 	{
@@ -793,28 +1810,203 @@ void AssetBrowserPanelWidget::BuildUi()
 			PasteCopiedAsset();
 		}
 	});
+	connect(m_delete_action_, &QAction::triggered, this, [this]()
+	{
+		if (IsAssetDeleteShortcutEnabled())
+		{
+			DeleteSelectedAssets();
+		}
+	});
+
+	installEventFilter(this);
+}
+
+bool AssetBrowserPanelWidget::IsAssetGridFocused() const
+{
+	if (m_asset_grid_ == nullptr)
+	{
+		return false;
+	}
+
+	QWidget* FocusWidget = QApplication::focusWidget();
+	if (FocusWidget == nullptr)
+	{
+		return false;
+	}
+
+	return FocusWidget == m_asset_grid_
+		|| FocusWidget == m_asset_grid_->viewport()
+		|| m_asset_grid_->isAncestorOf(FocusWidget);
+}
+
+bool AssetBrowserPanelWidget::IsFolderTreeFocused() const
+{
+	if (m_folder_tree_ == nullptr)
+	{
+		return false;
+	}
+
+	QWidget* FocusWidget = QApplication::focusWidget();
+	if (FocusWidget == nullptr)
+	{
+		return false;
+	}
+
+	return FocusWidget == m_folder_tree_
+		|| FocusWidget == m_folder_tree_->viewport()
+		|| m_folder_tree_->isAncestorOf(FocusWidget);
+}
+
+bool AssetBrowserPanelWidget::IsRenderViewportFocused() const
+{
+	QWidget* FocusWidget = QApplication::focusWidget();
+	for (QWidget* Widget = FocusWidget; Widget != nullptr; Widget = Widget->parentWidget())
+	{
+		const QString ClassName = Widget->metaObject()->className();
+		if (ClassName == QLatin1String("RenderViewportWidget")
+			|| ClassName == QLatin1String("ViewportHostWidget"))
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+bool AssetBrowserPanelWidget::IsAssetDeleteShortcutEnabled() const
+{
+	if (!IsAssetGridFocused() || GetSelectedAssetItems().empty())
+	{
+		return false;
+	}
+
+	QWidget* FocusWidget = QApplication::focusWidget();
+	if (FocusWidget == m_search_edit_)
+	{
+		return false;
+	}
+
+	if (FocusWidget != nullptr)
+	{
+		if (qobject_cast<const QLineEdit*>(FocusWidget) != nullptr
+			|| qobject_cast<const QAbstractSpinBox*>(FocusWidget) != nullptr)
+		{
+			return false;
+		}
+	}
+
+	return true;
+}
+
+bool AssetBrowserPanelWidget::ContainsFolderTreeWidget(const QWidget* InWidget) const
+{
+	if (InWidget == nullptr || m_folder_tree_ == nullptr)
+	{
+		return false;
+	}
+
+	return InWidget == m_folder_tree_
+		|| InWidget == m_folder_tree_->viewport()
+		|| m_folder_tree_->isAncestorOf(InWidget);
+}
+
+bool AssetBrowserPanelWidget::ContainsItemGridWidget(const QWidget* InWidget) const
+{
+	if (InWidget == nullptr || m_asset_grid_ == nullptr)
+	{
+		return false;
+	}
+
+	return InWidget == m_asset_grid_
+		|| InWidget == m_asset_grid_->viewport()
+		|| m_asset_grid_->isAncestorOf(InWidget);
+}
+
+void AssetBrowserPanelWidget::ClearAssetGridSelection()
+{
+	if (m_asset_grid_ == nullptr || m_asset_grid_->selectionModel() == nullptr)
+	{
+		return;
+	}
+
+	if (!m_asset_grid_->selectionModel()->hasSelection())
+	{
+		return;
+	}
+
+	m_asset_grid_->clearSelection();
+	m_asset_grid_->setCurrentIndex(QModelIndex());
+	UpdateGridStatusLabel();
+}
+
+void AssetBrowserPanelWidget::ClearFolderTreeMultiSelection()
+{
+	if (m_folder_tree_ == nullptr)
+	{
+		return;
+	}
+
+	QTreeWidgetItem* CurrentItem = m_folder_tree_->currentItem();
+	const QList<QTreeWidgetItem*> SelectedItems = m_folder_tree_->selectedItems();
+	if (SelectedItems.size() <= 1 && (SelectedItems.isEmpty() || SelectedItems.front() == CurrentItem))
+	{
+		return;
+	}
+
+	m_folder_tree_->clearSelection();
+	if (CurrentItem != nullptr)
+	{
+		CurrentItem->setSelected(true);
+		m_folder_tree_->setCurrentItem(CurrentItem);
+	}
+}
+
+void AssetBrowserPanelWidget::ClearAllSelections()
+{
+	ClearAssetGridSelection();
+	ClearFolderTreeMultiSelection();
 }
 
 bool AssetBrowserPanelWidget::eventFilter(QObject* InWatched, QEvent* InEvent)
 {
+	const bool bIsAssetGridInputTarget =
+		m_asset_grid_ != nullptr &&
+		(InWatched == m_asset_grid_ || InWatched == m_asset_grid_->viewport());
+	const bool bIsFolderTreeInputTarget =
+		m_folder_tree_ != nullptr &&
+		(InWatched == m_folder_tree_ || InWatched == m_folder_tree_->viewport());
+
 	if (InEvent->type() == QEvent::KeyPress)
 	{
 		auto* KeyEvent = static_cast<QKeyEvent*>(InEvent);
 		if (KeyEvent->key() == Qt::Key_F2)
 		{
-			if (InWatched == m_folder_tree_)
+			if (bIsFolderTreeInputTarget)
 			{
 				BeginRenameSelectedFolder();
 				return true;
 			}
-			if (InWatched == m_asset_grid_)
+			if (bIsAssetGridInputTarget)
 			{
-				BeginRenameSelectedAsset();
+				if (!GetSelectedGridFolderPaths().empty())
+				{
+					BeginRenameSelectedGridFolder();
+				}
+				else
+				{
+					BeginRenameSelectedAsset();
+				}
 				return true;
 			}
 		}
 
-		if (InWatched == m_asset_grid_)
+		if (bIsFolderTreeInputTarget && KeyEvent->key() == Qt::Key_Delete)
+		{
+			DeleteSelectedFolders();
+			return true;
+		}
+
+		if (bIsAssetGridInputTarget)
 		{
 			if (KeyEvent->matches(QKeySequence::Copy))
 			{
@@ -826,10 +2018,33 @@ bool AssetBrowserPanelWidget::eventFilter(QObject* InWatched, QEvent* InEvent)
 				PasteCopiedAsset();
 				return true;
 			}
+			if (KeyEvent->key() == Qt::Key_Delete)
+			{
+				if (!GetSelectedGridFolderPaths().empty())
+				{
+					DeleteSelectedFolders();
+				}
+				else
+				{
+					DeleteSelectedAssets();
+				}
+				return true;
+			}
+		}
+
+		if (InWatched == this && KeyEvent->key() == Qt::Key_Delete && IsAssetDeleteShortcutEnabled())
+		{
+			DeleteSelectedAssets();
+			return true;
 		}
 	}
 
 	return QWidget::eventFilter(InWatched, InEvent);
+}
+
+bool AssetBrowserPanelWidget::CanRenameFolderPath(const std::string& InFolderPath) const
+{
+	return !InFolderPath.empty() && InFolderPath != "All" && InFolderPath != "Content";
 }
 
 bool AssetBrowserPanelWidget::CanRenameFolderItem(const QTreeWidgetItem* InItem) const
@@ -839,8 +2054,87 @@ bool AssetBrowserPanelWidget::CanRenameFolderItem(const QTreeWidgetItem* InItem)
 		return false;
 	}
 
-	const std::string FolderPath = InItem->data(0, Qt::UserRole).toString().toStdString();
-	return !FolderPath.empty() && FolderPath != "All" && FolderPath != "Content";
+	const std::string FolderPath = InItem->data(0, Qt::UserRole).toString().toUtf8().toStdString();
+	return CanRenameFolderPath(FolderPath);
+}
+
+bool AssetBrowserPanelWidget::CanDeleteFolderItem(const QTreeWidgetItem* InItem) const
+{
+	return CanRenameFolderItem(InItem);
+}
+
+std::vector<std::string> AssetBrowserPanelWidget::GetSelectedDeletableFolderPaths() const
+{
+	std::vector<std::string> FolderPaths;
+	if (m_folder_tree_ == nullptr)
+	{
+		return FolderPaths;
+	}
+
+	const QList<QTreeWidgetItem*> SelectedItems = m_folder_tree_->selectedItems();
+	for (QTreeWidgetItem* Item : SelectedItems)
+	{
+		if (!CanDeleteFolderItem(Item))
+		{
+			continue;
+		}
+
+		const std::string FolderPath = Item->data(0, Qt::UserRole).toString().toStdString();
+		if (!FolderPath.empty())
+		{
+			FolderPaths.push_back(FolderPath);
+		}
+	}
+
+	return DeduplicateNestedFolderPaths(std::move(FolderPaths));
+}
+
+std::vector<std::string> AssetBrowserPanelWidget::GetSelectedGridFolderPaths() const
+{
+	std::vector<std::string> FolderPaths;
+	if (m_asset_grid_ == nullptr || m_list_model_ == nullptr || m_asset_grid_->selectionModel() == nullptr)
+	{
+		return FolderPaths;
+	}
+
+	const QModelIndexList SelectedIndexes = m_asset_grid_->selectionModel()->selectedIndexes();
+	for (const QModelIndex& Index : SelectedIndexes)
+	{
+		if (!Index.isValid() || !Index.data(static_cast<int>(EAssetListRole::IsFolder)).toBool())
+		{
+			continue;
+		}
+
+		const std::string FolderPath =
+			Index.data(static_cast<int>(EAssetListRole::FolderPath)).toString().toUtf8().toStdString();
+		if (!CanRenameFolderPath(FolderPath))
+		{
+			continue;
+		}
+
+		FolderPaths.push_back(FolderPath);
+	}
+
+	return DeduplicateNestedFolderPaths(std::move(FolderPaths));
+}
+
+std::vector<std::string> AssetBrowserPanelWidget::CollectSelectedFolderPathsForOperation() const
+{
+	if (IsAssetGridFocused())
+	{
+		const std::vector<std::string> GridFolderPaths = GetSelectedGridFolderPaths();
+		if (!GridFolderPaths.empty())
+		{
+			return GridFolderPaths;
+		}
+	}
+
+	if (IsFolderTreeFocused())
+	{
+		return GetSelectedDeletableFolderPaths();
+	}
+
+	return {};
 }
 
 bool AssetBrowserPanelWidget::CanCreateFolderUnderItem(const QTreeWidgetItem* InItem) const
@@ -950,7 +2244,94 @@ void AssetBrowserPanelWidget::BeginRenameSelectedFolder()
 	}
 
 	m_folder_tree_->setFocus();
+	if (m_folder_tree_->viewport() != nullptr)
+	{
+		m_folder_tree_->viewport()->setFocus(Qt::OtherFocusReason);
+	}
 	m_folder_tree_->editItem(CurrentItem, 0);
+}
+
+bool AssetBrowserPanelWidget::RenameFolderByPath(const std::string& InFolderPath, const std::string& InNewFolderName)
+{
+	if (!CanRenameFolderPath(InFolderPath))
+	{
+		return false;
+	}
+
+	const size_t LastSlash = InFolderPath.find_last_of('/');
+	const std::string OldFolderName =
+		(LastSlash == std::string::npos) ? InFolderPath : InFolderPath.substr(LastSlash + 1);
+	if (InNewFolderName == OldFolderName)
+	{
+		return true;
+	}
+
+	std::string ErrorMessage;
+	ClearContentDiskWatchPaths();
+	const bool bRenameSucceeded = FAssetRenameService::RenameFolder(InFolderPath, InNewFolderName, &ErrorMessage);
+	UpdateContentDiskWatchPaths();
+	if (!bRenameSucceeded)
+	{
+		QMessageBox::warning(
+			this,
+			tr("重命名失败"),
+			tr("无法重命名文件夹: %1").arg(QString::fromUtf8(ErrorMessage.c_str())));
+		m_last_registry_revision_ = 0;
+		RebuildFolderTree();
+		return false;
+	}
+
+	const std::string ParentPath = (LastSlash == std::string::npos) ? std::string() : InFolderPath.substr(0, LastSlash);
+	const std::string NewFolderPath =
+		ParentPath.empty() ? InNewFolderName : ParentPath + "/" + InNewFolderName;
+	if (m_selected_folder_path_ == InFolderPath || IsSubfolderPath(m_selected_folder_path_, InFolderPath))
+	{
+		m_selected_folder_path_ = NewFolderPath;
+	}
+
+	m_last_registry_revision_ = 0;
+	RefreshFromRegistry();
+	return true;
+}
+
+void AssetBrowserPanelWidget::BeginRenameSelectedGridFolder()
+{
+	std::string TargetFolderPath;
+	const QModelIndex CurrentIndex = m_asset_grid_->currentIndex();
+	if (CurrentIndex.isValid() && CurrentIndex.data(static_cast<int>(EAssetListRole::IsFolder)).toBool())
+	{
+		TargetFolderPath =
+			CurrentIndex.data(static_cast<int>(EAssetListRole::FolderPath)).toString().toUtf8().toStdString();
+	}
+	else
+	{
+		const std::vector<std::string> SelectedFolderPaths = GetSelectedGridFolderPaths();
+		if (SelectedFolderPaths.size() != 1)
+		{
+			return;
+		}
+
+		TargetFolderPath = SelectedFolderPaths.front();
+	}
+
+	if (!CanRenameFolderPath(TargetFolderPath))
+	{
+		return;
+	}
+
+	const QString CurrentName = FolderPathToDisplayName(TargetFolderPath);
+	const QString NewName = QInputDialog::getText(
+		this,
+		tr("重命名文件夹"),
+		tr("新文件夹名称:"),
+		QLineEdit::Normal,
+		CurrentName);
+	if (NewName.trimmed().isEmpty() || NewName.trimmed() == CurrentName.trimmed())
+	{
+		return;
+	}
+
+	RenameFolderByPath(TargetFolderPath, NewName.trimmed().toUtf8().toStdString());
 }
 
 void AssetBrowserPanelWidget::OnFolderItemChanged(QTreeWidgetItem* InItem, int InColumn)
@@ -961,8 +2342,8 @@ void AssetBrowserPanelWidget::OnFolderItemChanged(QTreeWidgetItem* InItem, int I
 		return;
 	}
 
-	const std::string FolderPath = InItem->data(0, Qt::UserRole).toString().toStdString();
-	const std::string NewFolderName = InItem->text(0).trimmed().toStdString();
+	const std::string FolderPath = InItem->data(0, Qt::UserRole).toString().toUtf8().toStdString();
+	const std::string NewFolderName = InItem->text(0).trimmed().toUtf8().toStdString();
 	if (NewFolderName.empty())
 	{
 		m_last_registry_revision_ = 0;
@@ -978,23 +2359,7 @@ void AssetBrowserPanelWidget::OnFolderItemChanged(QTreeWidgetItem* InItem, int I
 		return;
 	}
 
-	std::string ErrorMessage;
-	if (!FAssetRenameService::RenameFolder(FolderPath, NewFolderName, &ErrorMessage))
-	{
-		QMessageBox::warning(
-			this,
-			tr("重命名失败"),
-			tr("无法重命名文件夹: %1").arg(QString::fromStdString(ErrorMessage)));
-		m_last_registry_revision_ = 0;
-		RebuildFolderTree();
-		return;
-	}
-
-	const std::string ParentPath = (LastSlash == std::string::npos) ? std::string() : FolderPath.substr(0, LastSlash);
-	m_selected_folder_path_ =
-		ParentPath.empty() ? NewFolderName : ParentPath + "/" + NewFolderName;
-	m_last_registry_revision_ = 0;
-	RefreshFromRegistry();
+	RenameFolderByPath(FolderPath, NewFolderName);
 }
 
 QTreeWidgetItem* AssetBrowserPanelWidget::FindFolderTreeItemByPath(const std::string& InFolderPath) const
@@ -1103,19 +2468,30 @@ void AssetBrowserPanelWidget::BeginRenameSelectedAsset()
 
 void AssetBrowserPanelWidget::CopySelectedAsset()
 {
-	const QModelIndex CurrentIndex = m_asset_grid_->currentIndex();
-	if (!CurrentIndex.isValid())
+	const std::vector<const FAssetBrowserListItem*> SelectedItems = GetSelectedAssetItems();
+	if (SelectedItems.empty())
 	{
 		return;
 	}
 
-	const FAssetBrowserListItem* Item = m_list_model_->GetItemAt(CurrentIndex.row());
-	if (Item == nullptr || Item->bIsFolder)
+	std::vector<FAssetRegistryEntry> CopiedEntries;
+	CopiedEntries.reserve(SelectedItems.size());
+	for (const FAssetBrowserListItem* Item : SelectedItems)
+	{
+		if (Item == nullptr)
+		{
+			continue;
+		}
+
+		CopiedEntries.push_back(Item->Entry);
+	}
+
+	if (CopiedEntries.empty())
 	{
 		return;
 	}
 
-	m_copied_asset_entry_ = Item->Entry;
+	m_copied_asset_entries_ = std::move(CopiedEntries);
 	if (m_paste_action_ != nullptr)
 	{
 		m_paste_action_->setEnabled(true);
@@ -1124,7 +2500,7 @@ void AssetBrowserPanelWidget::CopySelectedAsset()
 
 void AssetBrowserPanelWidget::PasteCopiedAsset()
 {
-	if (!m_copied_asset_entry_.has_value())
+	if (m_copied_asset_entries_.empty())
 	{
 		return;
 	}
@@ -1138,34 +2514,72 @@ void AssetBrowserPanelWidget::PasteCopiedAsset()
 		return;
 	}
 
-	std::string NewSoftObjectPath;
-	std::string ErrorMessage;
-	if (!FAssetDuplicateService::DuplicateAsset(
-			m_copied_asset_entry_.value(),
-			m_selected_folder_path_,
-			&NewSoftObjectPath,
-			&ErrorMessage))
+	QStringList FailedMessages;
+	int SuccessCount = 0;
+	for (const FAssetRegistryEntry& Entry : m_copied_asset_entries_)
+	{
+		std::string NewSoftObjectPath;
+		std::string ErrorMessage;
+		if (!FAssetDuplicateService::DuplicateAsset(
+				Entry,
+				m_selected_folder_path_,
+				&NewSoftObjectPath,
+				&ErrorMessage))
+		{
+			FailedMessages.push_back(
+				tr("%1: %2")
+					.arg(QString::fromStdString(Entry.ObjectName))
+					.arg(QString::fromStdString(ErrorMessage)));
+			continue;
+		}
+
+		++SuccessCount;
+	}
+
+	if (SuccessCount > 0)
+	{
+		RefreshAfterAssetDiskMutation();
+	}
+
+	if (!FailedMessages.isEmpty())
 	{
 		QMessageBox::warning(
 			this,
 			tr("粘贴失败"),
-			tr("无法创建资产副本: %1").arg(QString::fromStdString(ErrorMessage)));
-		return;
+			tr("部分资产无法粘贴:\n%1").arg(FailedMessages.join('\n')));
 	}
-
-	RefreshAfterAssetDiskMutation();
 }
 
-void AssetBrowserPanelWidget::DuplicateSelectedAsset()
+std::vector<const FAssetBrowserListItem*> AssetBrowserPanelWidget::GetSelectedAssetItems() const
 {
-	const QModelIndex CurrentIndex = m_asset_grid_->currentIndex();
-	if (!CurrentIndex.isValid())
+	std::vector<const FAssetBrowserListItem*> SelectedItems;
+	if (m_asset_grid_ == nullptr || m_list_model_ == nullptr || m_asset_grid_->selectionModel() == nullptr)
 	{
-		return;
+		return SelectedItems;
 	}
 
-	const FAssetBrowserListItem* Item = m_list_model_->GetItemAt(CurrentIndex.row());
-	if (Item == nullptr || Item->bIsFolder)
+	const QModelIndexList SelectedIndexes = m_asset_grid_->selectionModel()->selectedIndexes();
+	for (const QModelIndex& Index : SelectedIndexes)
+	{
+		if (!Index.isValid() || Index.data(static_cast<int>(EAssetListRole::IsFolder)).toBool())
+		{
+			continue;
+		}
+
+		const FAssetBrowserListItem* Item = m_list_model_->GetItemAt(Index.row());
+		if (Item != nullptr)
+		{
+			SelectedItems.push_back(Item);
+		}
+	}
+
+	return SelectedItems;
+}
+
+void AssetBrowserPanelWidget::DuplicateSelectedAssets()
+{
+	const std::vector<const FAssetBrowserListItem*> SelectedItems = GetSelectedAssetItems();
+	if (SelectedItems.empty())
 	{
 		return;
 	}
@@ -1179,47 +2593,456 @@ void AssetBrowserPanelWidget::DuplicateSelectedAsset()
 		return;
 	}
 
-	std::string NewSoftObjectPath;
-	std::string ErrorMessage;
-	if (!FAssetDuplicateService::DuplicateAsset(
-			Item->Entry,
-			m_selected_folder_path_,
-			&NewSoftObjectPath,
-			&ErrorMessage))
+	QStringList FailedMessages;
+	int SuccessCount = 0;
+	for (const FAssetBrowserListItem* Item : SelectedItems)
+	{
+		if (Item == nullptr)
+		{
+			continue;
+		}
+
+		std::string NewSoftObjectPath;
+		std::string ErrorMessage;
+		if (!FAssetDuplicateService::DuplicateAsset(
+				Item->Entry,
+				m_selected_folder_path_,
+				&NewSoftObjectPath,
+				&ErrorMessage))
+		{
+			FailedMessages.push_back(
+				tr("%1: %2")
+					.arg(QString::fromStdString(Item->Entry.ObjectName))
+					.arg(QString::fromStdString(ErrorMessage)));
+			continue;
+		}
+
+		++SuccessCount;
+	}
+
+	if (SuccessCount > 0)
+	{
+		RefreshAfterAssetDiskMutation();
+	}
+
+	if (!FailedMessages.isEmpty())
 	{
 		QMessageBox::warning(
 			this,
 			tr("创建副本失败"),
-			tr("无法创建资产副本: %1").arg(QString::fromStdString(ErrorMessage)));
-		return;
+			tr("部分资产无法创建副本:\n%1").arg(FailedMessages.join('\n')));
 	}
-
-	RefreshAfterAssetDiskMutation();
 }
 
-void AssetBrowserPanelWidget::OnAssetDroppedToFolder(
-	const std::string& InTargetFolderPath,
-	const std::string& InSoftObjectPath)
+void AssetBrowserPanelWidget::ReimportSelectedAssets()
 {
-	const std::optional<FAssetRegistryEntry> Entry = FAssetRegistry::Get().FindBySoftPath(InSoftObjectPath);
-	if (!Entry.has_value())
+	const std::vector<const FAssetBrowserListItem*> SelectedItems = GetSelectedAssetItems();
+	if (SelectedItems.empty())
 	{
 		return;
 	}
 
-	std::string ErrorMessage;
-	if (!FAssetRenameService::MoveAssetToFolder(Entry.value(), InTargetFolderPath, nullptr, &ErrorMessage))
+	QStringList FailedMessages;
+	int SuccessCount = 0;
+	for (const FAssetBrowserListItem* Item : SelectedItems)
+	{
+		if (Item == nullptr || !AssetTypeInfo::IsMeshAssetType(Item->Entry.Type))
+		{
+			continue;
+		}
+
+		if (Item->Entry.SourceFile.empty())
+		{
+			FailedMessages.push_back(
+				tr("%1: 缺少 SourceFile").arg(QString::fromStdString(Item->Entry.ObjectName)));
+			continue;
+		}
+
+		std::string ErrorMessage;
+		const std::string SoftPath = FSoftObjectPath::Build(Item->Entry.AssetPath, Item->Entry.ObjectName);
+		if (!UMeshImportFactory::Reimport(SoftPath, Item->Entry.SourceFile, &ErrorMessage))
+		{
+			FailedMessages.push_back(
+				tr("%1: %2")
+					.arg(QString::fromStdString(Item->Entry.ObjectName))
+					.arg(QString::fromStdString(ErrorMessage)));
+			continue;
+		}
+
+		FAssetThumbnailService::Get().InvalidateEntry(Item->Entry);
+		++SuccessCount;
+	}
+
+	if (SuccessCount > 0)
+	{
+		RefreshFromRegistry();
+	}
+
+	if (!FailedMessages.isEmpty())
+	{
+		QMessageBox::warning(
+			this,
+			tr("Reimport 失败"),
+			tr("部分资产无法 Reimport:\n%1").arg(FailedMessages.join('\n')));
+	}
+	else if (SuccessCount == 0)
+	{
+		QMessageBox::warning(this, tr("Reimport"), tr("所选资产中没有可 Reimport 的 Mesh 资产。"));
+	}
+}
+
+bool AssetBrowserPanelWidget::TryHandleDeleteShortcut()
+{
+	if (IsFolderTreeFocused() || IsAssetGridFocused())
+	{
+		const std::vector<std::string> FolderPaths = CollectSelectedFolderPathsForOperation();
+		if (!FolderPaths.empty())
+		{
+			DeleteSelectedFolders();
+			return true;
+		}
+	}
+
+	if (!IsAssetDeleteShortcutEnabled())
+	{
+		return false;
+	}
+
+	DeleteSelectedAssets();
+	return true;
+}
+
+void AssetBrowserPanelWidget::DeleteSelectedFolders()
+{
+	const std::vector<std::string> FolderPaths = CollectSelectedFolderPathsForOperation();
+	if (FolderPaths.empty())
+	{
+		return;
+	}
+
+	size_t TotalAssetCount = 0;
+	QStringList FolderNames;
+	for (const std::string& FolderPath : FolderPaths)
+	{
+		TotalAssetCount += FAssetDeleteService::CountAssetsInFolder(m_all_entries_, FolderPath);
+		FolderNames.push_back(FolderPathToDisplayName(FolderPath));
+	}
+
+	QString ConfirmMessage;
+	if (FolderPaths.size() == 1)
+	{
+		ConfirmMessage = tr("确定要删除文件夹 \"%1\" 吗？\n该文件夹下共有 %2 个资产文件。\n此操作不可撤销。")
+			.arg(FolderNames.front())
+			.arg(static_cast<qulonglong>(TotalAssetCount));
+	}
+	else
+	{
+		ConfirmMessage = tr("确定要删除选中的 %1 个文件夹吗？\n共包含 %2 个资产文件。\n此操作不可撤销。\n\n%3")
+			.arg(FolderPaths.size())
+			.arg(static_cast<qulonglong>(TotalAssetCount))
+			.arg(FolderNames.join('\n'));
+	}
+
+	const QMessageBox::StandardButton ConfirmResult = QMessageBox::question(
+		this,
+		tr("删除文件夹"),
+		ConfirmMessage,
+		QMessageBox::Yes | QMessageBox::No,
+		QMessageBox::No);
+	if (ConfirmResult != QMessageBox::Yes)
+	{
+		return;
+	}
+
+	ClearContentDiskWatchPaths();
+
+	QStringList FailedMessages;
+	std::vector<std::string> DeletedSoftPaths;
+	int SuccessCount = 0;
+	for (const std::string& FolderPath : FolderPaths)
+	{
+		std::vector<std::string> FolderDeletedSoftPaths;
+		std::string ErrorMessage;
+		if (!FAssetDeleteService::DeleteFolder(m_all_entries_, FolderPath, &FolderDeletedSoftPaths, &ErrorMessage))
+		{
+			FailedMessages.push_back(
+				tr("%1: %2")
+					.arg(FolderPathToDisplayName(FolderPath))
+					.arg(QString::fromStdString(ErrorMessage)));
+			continue;
+		}
+
+		DeletedSoftPaths.insert(
+			DeletedSoftPaths.end(),
+			FolderDeletedSoftPaths.begin(),
+			FolderDeletedSoftPaths.end());
+		++SuccessCount;
+	}
+
+	UpdateContentDiskWatchPaths();
+
+	if (SuccessCount > 0)
+	{
+		if (!m_copied_asset_entries_.empty())
+		{
+			m_copied_asset_entries_.erase(
+				std::remove_if(
+					m_copied_asset_entries_.begin(),
+					m_copied_asset_entries_.end(),
+					[&DeletedSoftPaths](const FAssetRegistryEntry& InEntry)
+					{
+						const std::string CopiedSoftPath =
+							FSoftObjectPath::Build(InEntry.AssetPath, InEntry.ObjectName);
+						return std::find(
+							DeletedSoftPaths.begin(),
+							DeletedSoftPaths.end(),
+							CopiedSoftPath) != DeletedSoftPaths.end();
+					}),
+				m_copied_asset_entries_.end());
+			if (m_paste_action_ != nullptr)
+			{
+				m_paste_action_->setEnabled(!m_copied_asset_entries_.empty());
+			}
+		}
+
+		if (m_game_app_ != nullptr && m_game_app_->HasActiveLevel())
+		{
+			ULevel* ActiveLevel = m_game_app_->GetActiveLevel();
+			if (ActiveLevel != nullptr)
+			{
+				for (const std::string& SoftPath : DeletedSoftPaths)
+				{
+					ActiveLevel->UnloadMeshAssetReferences(SoftPath);
+				}
+			}
+			m_game_app_->RefreshActiveLevelRender();
+		}
+
+		const bool bCurrentFolderDeleted = std::find(
+			FolderPaths.begin(),
+			FolderPaths.end(),
+			m_selected_folder_path_) != FolderPaths.end()
+			|| std::any_of(
+				FolderPaths.begin(),
+				FolderPaths.end(),
+				[this](const std::string& InDeletedFolderPath)
+				{
+					return IsSubfolderPath(m_selected_folder_path_, InDeletedFolderPath);
+				});
+		if (bCurrentFolderDeleted)
+		{
+			m_selected_folder_path_ = "All";
+		}
+
+		RefreshAfterAssetDiskMutation();
+	}
+
+	if (!FailedMessages.isEmpty())
+	{
+		QMessageBox::warning(
+			this,
+			tr("删除失败"),
+			tr("部分文件夹无法删除:\n%1").arg(FailedMessages.join('\n')));
+	}
+}
+
+void AssetBrowserPanelWidget::DeleteSelectedAssets()
+{
+	const std::vector<const FAssetBrowserListItem*> SelectedItems = GetSelectedAssetItems();
+	if (SelectedItems.empty())
+	{
+		return;
+	}
+
+	QStringList AssetNames;
+	for (const FAssetBrowserListItem* Item : SelectedItems)
+	{
+		if (Item != nullptr)
+		{
+			AssetNames.push_back(QString::fromStdString(Item->Entry.ObjectName));
+		}
+	}
+
+	QString ConfirmMessage;
+	if (SelectedItems.size() == 1)
+	{
+		ConfirmMessage = tr("确定要删除资产 \"%1\" 吗？此操作不可撤销。").arg(AssetNames.front());
+	}
+	else
+	{
+		ConfirmMessage = tr("确定要删除选中的 %1 个资产吗？此操作不可撤销。\n\n%2")
+			.arg(SelectedItems.size())
+			.arg(AssetNames.join('\n'));
+	}
+
+	const QMessageBox::StandardButton ConfirmResult = QMessageBox::question(
+		this,
+		tr("删除资产"),
+		ConfirmMessage,
+		QMessageBox::Yes | QMessageBox::No,
+		QMessageBox::No);
+	if (ConfirmResult != QMessageBox::Yes)
+	{
+		return;
+	}
+
+	QStringList FailedMessages;
+	std::vector<std::string> DeletedSoftPaths;
+	int SuccessCount = 0;
+	for (const FAssetBrowserListItem* Item : SelectedItems)
+	{
+		if (Item == nullptr)
+		{
+			continue;
+		}
+
+		const std::string SoftPath = FSoftObjectPath::Build(Item->Entry.AssetPath, Item->Entry.ObjectName);
+		std::string ErrorMessage;
+		if (!FAssetDeleteService::DeleteAsset(Item->Entry, &ErrorMessage))
+		{
+			FailedMessages.push_back(
+				tr("%1: %2")
+					.arg(QString::fromStdString(Item->Entry.ObjectName))
+					.arg(QString::fromStdString(ErrorMessage)));
+			continue;
+		}
+
+		DeletedSoftPaths.push_back(SoftPath);
+		++SuccessCount;
+	}
+
+	if (SuccessCount > 0)
+	{
+		if (!m_copied_asset_entries_.empty())
+		{
+			m_copied_asset_entries_.erase(
+				std::remove_if(
+					m_copied_asset_entries_.begin(),
+					m_copied_asset_entries_.end(),
+					[&DeletedSoftPaths](const FAssetRegistryEntry& InEntry)
+					{
+						const std::string CopiedSoftPath =
+							FSoftObjectPath::Build(InEntry.AssetPath, InEntry.ObjectName);
+						return std::find(
+							DeletedSoftPaths.begin(),
+							DeletedSoftPaths.end(),
+							CopiedSoftPath) != DeletedSoftPaths.end();
+					}),
+				m_copied_asset_entries_.end());
+			if (m_paste_action_ != nullptr)
+			{
+				m_paste_action_->setEnabled(!m_copied_asset_entries_.empty());
+			}
+		}
+
+		if (m_game_app_ != nullptr && m_game_app_->HasActiveLevel())
+		{
+			ULevel* ActiveLevel = m_game_app_->GetActiveLevel();
+			if (ActiveLevel != nullptr)
+			{
+				for (const std::string& SoftPath : DeletedSoftPaths)
+				{
+					ActiveLevel->UnloadMeshAssetReferences(SoftPath);
+				}
+			}
+			m_game_app_->RefreshActiveLevelRender();
+		}
+
+		RefreshAfterAssetDiskMutation();
+	}
+
+	if (!FailedMessages.isEmpty())
+	{
+		QMessageBox::warning(
+			this,
+			tr("删除失败"),
+			tr("部分资产无法删除:\n%1").arg(FailedMessages.join('\n')));
+	}
+}
+
+void AssetBrowserPanelWidget::OnItemsDroppedToFolder(
+	const std::string& InTargetFolderPath,
+	const std::vector<std::string>& InSoftObjectPaths,
+	const std::vector<std::string>& InFolderPaths)
+{
+	if (InSoftObjectPaths.empty() && InFolderPaths.empty())
+	{
+		return;
+	}
+
+	const std::vector<std::string> RootFolderPaths = DeduplicateNestedFolderPaths(InFolderPaths);
+	if (!RootFolderPaths.empty())
+	{
+		ClearContentDiskWatchPaths();
+	}
+
+	QStringList FailedMessages;
+	int SuccessCount = 0;
+
+	for (const std::string& SoftObjectPath : InSoftObjectPaths)
+	{
+		const std::optional<FAssetRegistryEntry> Entry = FAssetRegistry::Get().FindBySoftPath(SoftObjectPath);
+		if (!Entry.has_value())
+		{
+			FailedMessages.push_back(tr("未找到资产: %1").arg(QString::fromStdString(SoftObjectPath)));
+			continue;
+		}
+
+		std::string ErrorMessage;
+		if (!FAssetRenameService::MoveAssetToFolder(Entry.value(), InTargetFolderPath, nullptr, &ErrorMessage))
+		{
+			FailedMessages.push_back(
+				tr("%1: %2")
+					.arg(QString::fromStdString(Entry->ObjectName))
+					.arg(QString::fromStdString(ErrorMessage)));
+			continue;
+		}
+
+		++SuccessCount;
+	}
+
+	for (const std::string& FolderPath : RootFolderPaths)
+	{
+		if (!CanMoveFolderInto(FolderPath, InTargetFolderPath))
+		{
+			FailedMessages.push_back(
+				tr("%1: %2")
+					.arg(FolderPathToDisplayName(FolderPath))
+					.arg(tr("无法移动到该文件夹。")));
+			continue;
+		}
+
+		std::string ErrorMessage;
+		if (!FAssetRenameService::MoveFolder(FolderPath, InTargetFolderPath, &ErrorMessage))
+		{
+			FailedMessages.push_back(
+				tr("%1: %2")
+					.arg(FolderPathToDisplayName(FolderPath))
+					.arg(QString::fromStdString(ErrorMessage)));
+			continue;
+		}
+
+		++SuccessCount;
+	}
+
+	if (SuccessCount > 0)
+	{
+		m_selected_folder_path_ = InTargetFolderPath;
+		RefreshAfterAssetDiskMutation();
+		SelectFolderTreeItemByPath(InTargetFolderPath);
+	}
+	else if (!RootFolderPaths.empty())
+	{
+		UpdateContentDiskWatchPaths();
+	}
+
+	if (!FailedMessages.isEmpty())
 	{
 		QMessageBox::warning(
 			this,
 			tr("移动失败"),
-			tr("无法移动资产: %1").arg(QString::fromStdString(ErrorMessage)));
-		return;
+			tr("部分项目无法移动:\n%1").arg(FailedMessages.join('\n')));
 	}
-
-	m_selected_folder_path_ = InTargetFolderPath;
-	RefreshAfterAssetDiskMutation();
-	SelectFolderTreeItemByPath(InTargetFolderPath);
 }
 
 void AssetBrowserPanelWidget::RefreshAfterAssetDiskMutation()
@@ -1260,6 +3083,22 @@ void AssetBrowserPanelWidget::SetupContentDiskWatcher()
 		});
 
 	UpdateContentDiskWatchPaths();
+}
+
+void AssetBrowserPanelWidget::ClearContentDiskWatchPaths()
+{
+	if (m_content_disk_watcher_ == nullptr)
+	{
+		return;
+	}
+
+	const QStringList WatchedPaths = m_content_disk_watcher_->directories();
+	for (const QString& Path : WatchedPaths)
+	{
+		m_content_disk_watcher_->removePath(Path);
+	}
+
+	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
 }
 
 void AssetBrowserPanelWidget::UpdateContentDiskWatchPaths()
@@ -1509,10 +3348,11 @@ void AssetBrowserPanelWidget::ApplyFilters()
 		});
 
 	m_list_model_->SetItems(std::move(FilteredItems));
+	static_cast<AssetBrowserListView*>(m_asset_grid_)->DismissItemHover();
 	m_asset_grid_->clearSelection();
 	m_asset_grid_->setCurrentIndex(QModelIndex());
 	m_asset_grid_->viewport()->setProperty("assetDragSourceRow", kAssetDragSourceNone);
-	m_status_label_->setText(tr("%1 items").arg(m_list_model_->rowCount()));
+	UpdateGridStatusLabel();
 
 	for (int Row = 0; Row < m_list_model_->rowCount(); ++Row)
 	{
@@ -1522,6 +3362,33 @@ void AssetBrowserPanelWidget::ApplyFilters()
 			RequestThumbnailForRow(Row, Row == 0);
 		}
 	}
+}
+
+void AssetBrowserPanelWidget::UpdateGridStatusLabel()
+{
+	if (m_status_label_ == nullptr || m_list_model_ == nullptr)
+	{
+		return;
+	}
+
+	const int TotalCount = m_list_model_->rowCount();
+	const int SelectedCount =
+		m_asset_grid_ != nullptr && m_asset_grid_->selectionModel() != nullptr
+		? m_asset_grid_->selectionModel()->selectedIndexes().size()
+		: 0;
+	if (SelectedCount > 1)
+	{
+		m_status_label_->setText(tr("%1 items (%2 selected)").arg(TotalCount).arg(SelectedCount));
+	}
+	else
+	{
+		m_status_label_->setText(tr("%1 items").arg(TotalCount));
+	}
+}
+
+void AssetBrowserPanelWidget::OnGridSelectionChanged()
+{
+	UpdateGridStatusLabel();
 }
 
 void AssetBrowserPanelWidget::OnAssetGridDoubleClicked(const QModelIndex& InIndex)
@@ -1645,11 +3512,7 @@ void AssetBrowserPanelWidget::OnTypeFilterChanged(int InIndex)
 void AssetBrowserPanelWidget::OnFolderTreeContextMenuRequested(const QPoint& InPos)
 {
 	QTreeWidgetItem* Item = m_folder_tree_->itemAt(InPos);
-	if (Item != nullptr)
-	{
-		m_folder_tree_->setCurrentItem(Item);
-	}
-	else
+	if (Item == nullptr)
 	{
 		Item = m_folder_tree_->currentItem();
 	}
@@ -1659,12 +3522,24 @@ void AssetBrowserPanelWidget::OnFolderTreeContextMenuRequested(const QPoint& InP
 		return;
 	}
 
+	const std::vector<std::string> DeletableFolderPaths = GetSelectedDeletableFolderPaths();
+	const bool bIsMultiFolderSelection = DeletableFolderPaths.size() > 1;
+
 	QMenu Menu(this);
-	QAction* AddFolderAction = Menu.addAction(tr("添加新文件夹"));
-	AddFolderAction->setEnabled(CanCreateFolderUnderItem(Item));
-	QAction* RenameAction = Menu.addAction(tr("重命名"));
-	RenameAction->setShortcut(QKeySequence(Qt::Key_F2));
-	RenameAction->setEnabled(CanRenameFolderItem(Item));
+	QAction* AddFolderAction = nullptr;
+	QAction* RenameAction = nullptr;
+	if (!bIsMultiFolderSelection)
+	{
+		AddFolderAction = Menu.addAction(tr("添加新文件夹"));
+		AddFolderAction->setEnabled(CanCreateFolderUnderItem(Item));
+		RenameAction = Menu.addAction(tr("重命名"));
+		RenameAction->setShortcut(QKeySequence(Qt::Key_F2));
+		RenameAction->setEnabled(CanRenameFolderItem(Item));
+	}
+
+	QAction* DeleteAction = Menu.addAction(tr("删除"));
+	DeleteAction->setShortcut(QKeySequence::Delete);
+	DeleteAction->setEnabled(!DeletableFolderPaths.empty());
 
 	QAction* Chosen = Menu.exec(m_folder_tree_->viewport()->mapToGlobal(InPos));
 	if (Chosen == AddFolderAction)
@@ -1674,6 +3549,10 @@ void AssetBrowserPanelWidget::OnFolderTreeContextMenuRequested(const QPoint& InP
 	else if (Chosen == RenameAction)
 	{
 		BeginRenameSelectedFolder();
+	}
+	else if (Chosen == DeleteAction)
+	{
+		DeleteSelectedFolders();
 	}
 }
 
@@ -1733,28 +3612,80 @@ void AssetBrowserPanelWidget::OnGridContextMenuRequested(const QPoint& InPos)
 		return;
 	}
 
-	m_asset_grid_->setCurrentIndex(Index);
-
 	if (Index.data(static_cast<int>(EAssetListRole::IsFolder)).toBool())
 	{
+		const std::vector<std::string> SelectedFolderPaths = GetSelectedGridFolderPaths();
+		const bool bIsMultiFolderSelection = SelectedFolderPaths.size() > 1;
+		const std::string ClickedFolderPath =
+			Index.data(static_cast<int>(EAssetListRole::FolderPath)).toString().toUtf8().toStdString();
+
+		QMenu Menu(this);
+		QAction* RenameAction = nullptr;
+		if (!bIsMultiFolderSelection)
+		{
+			RenameAction = Menu.addAction(tr("重命名"));
+			RenameAction->setShortcut(QKeySequence(Qt::Key_F2));
+			RenameAction->setEnabled(CanRenameFolderPath(ClickedFolderPath));
+		}
+
+		QAction* DeleteAction = Menu.addAction(tr("删除"));
+		DeleteAction->setShortcut(QKeySequence::Delete);
+		DeleteAction->setEnabled(!SelectedFolderPaths.empty());
+
+		QAction* Chosen = Menu.exec(m_asset_grid_->viewport()->mapToGlobal(InPos));
+		if (Chosen == RenameAction)
+		{
+			BeginRenameSelectedGridFolder();
+		}
+		else if (Chosen == DeleteAction)
+		{
+			DeleteSelectedFolders();
+		}
 		return;
 	}
+
+	const std::vector<const FAssetBrowserListItem*> SelectedItems = GetSelectedAssetItems();
+	const bool bIsMultiAssetSelection = SelectedItems.size() > 1;
 
 	const QString SoftPath = Index.data(static_cast<int>(EAssetListRole::SoftObjectPath)).toString();
 	const QString UAssetPath = Index.data(static_cast<int>(EAssetListRole::UAssetFilePath)).toString();
 	const QString AssetType = Index.data(static_cast<int>(EAssetListRole::AssetType)).toString();
 
 	QMenu Menu(this);
-	QAction* ShowInExplorerAction = Menu.addAction(tr("在资源管理器中显示"));
-	QAction* CopyPathAction = Menu.addAction(tr("复制 SoftObjectPath"));
+	QAction* ShowInExplorerAction = nullptr;
+	QAction* CopyPathAction = nullptr;
+	QAction* RenameAction = nullptr;
+
+	if (!bIsMultiAssetSelection)
+	{
+		ShowInExplorerAction = Menu.addAction(tr("在资源管理器中显示"));
+		CopyPathAction = Menu.addAction(tr("复制 SoftObjectPath"));
+	}
+
 	QAction* DuplicateAction = Menu.addAction(tr("创建副本"));
-	QAction* RenameAction = Menu.addAction(tr("重命名"));
-	RenameAction->setShortcut(QKeySequence(Qt::Key_F2));
+	if (!bIsMultiAssetSelection)
+	{
+		RenameAction = Menu.addAction(tr("重命名"));
+		RenameAction->setShortcut(QKeySequence(Qt::Key_F2));
+	}
+
 	QAction* ReimportAction = nullptr;
-	if (AssetTypeInfo::IsMeshAssetType(AssetType.toStdString()))
+	bool bHasMeshSelection = false;
+	for (const FAssetBrowserListItem* Item : SelectedItems)
+	{
+		if (Item != nullptr && AssetTypeInfo::IsMeshAssetType(Item->Entry.Type))
+		{
+			bHasMeshSelection = true;
+			break;
+		}
+	}
+	if (bHasMeshSelection || AssetTypeInfo::IsMeshAssetType(AssetType.toStdString()))
 	{
 		ReimportAction = Menu.addAction(tr("Reimport"));
 	}
+
+	QAction* DeleteAction = Menu.addAction(tr("删除"));
+	DeleteAction->setShortcut(QKeySequence::Delete);
 
 	QAction* Chosen = Menu.exec(m_asset_grid_->viewport()->mapToGlobal(InPos));
 	if (Chosen == ShowInExplorerAction)
@@ -1768,7 +3699,7 @@ void AssetBrowserPanelWidget::OnGridContextMenuRequested(const QPoint& InPos)
 	}
 	else if (Chosen == DuplicateAction)
 	{
-		DuplicateSelectedAsset();
+		DuplicateSelectedAssets();
 	}
 	else if (Chosen == RenameAction)
 	{
@@ -1776,26 +3707,36 @@ void AssetBrowserPanelWidget::OnGridContextMenuRequested(const QPoint& InPos)
 	}
 	else if (Chosen == ReimportAction)
 	{
-		const FAssetBrowserListItem* Item = m_list_model_->GetItemAt(Index.row());
-		if (Item == nullptr || Item->Entry.SourceFile.empty())
+		if (bIsMultiAssetSelection)
 		{
-			QMessageBox::warning(this, tr("Reimport"), tr("该资产缺少 SourceFile，无法 Reimport。"));
-			return;
+			ReimportSelectedAssets();
 		}
-
-		std::string ErrorMessage;
-		const std::filesystem::path SourcePath = Item->Entry.SourceFile;
-		if (!UMeshImportFactory::Reimport(SoftPath.toStdString(), SourcePath, &ErrorMessage))
+		else
 		{
-			QMessageBox::warning(
-				this,
-				tr("Reimport 失败"),
-				tr("无法 Reimport: %1").arg(QString::fromStdString(ErrorMessage)));
-			return;
-		}
+			const FAssetBrowserListItem* Item = m_list_model_->GetItemAt(Index.row());
+			if (Item == nullptr || Item->Entry.SourceFile.empty())
+			{
+				QMessageBox::warning(this, tr("Reimport"), tr("该资产缺少 SourceFile，无法 Reimport。"));
+				return;
+			}
 
-		FAssetThumbnailService::Get().InvalidateEntry(Item->Entry);
-		RefreshFromRegistry();
+			std::string ErrorMessage;
+			if (!UMeshImportFactory::Reimport(SoftPath.toStdString(), Item->Entry.SourceFile, &ErrorMessage))
+			{
+				QMessageBox::warning(
+					this,
+					tr("Reimport 失败"),
+					tr("无法 Reimport: %1").arg(QString::fromStdString(ErrorMessage)));
+				return;
+			}
+
+			FAssetThumbnailService::Get().InvalidateEntry(Item->Entry);
+			RefreshFromRegistry();
+		}
+	}
+	else if (Chosen == DeleteAction)
+	{
+		DeleteSelectedAssets();
 	}
 }
 
