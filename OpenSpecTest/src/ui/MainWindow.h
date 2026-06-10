@@ -35,6 +35,7 @@ class AssetBrowserPanelWidget;
 class CameraSpeedControlWidget;
 class DetailPanelWidget;
 class GameApp;
+class OutputLogPanelWidget;
 class WorldContentPanelWidget;
 
 class RenderViewportWidget final : public QWidget
@@ -117,6 +118,7 @@ private:
 	void BuildWorldContentPanel();
 	void BuildDetailPanel();
 	void BuildAssetBrowserPanel();
+	void BuildOutputLogPanel();
 	void ConfigureDockLayout();
 	void ApplyInitialDockProportions();
 	void RefreshScenePanels();
@@ -157,6 +159,7 @@ private:
 	QPointer<WorldContentPanelWidget> m_world_content_panel_;
 	QPointer<DetailPanelWidget> m_detail_panel_;
 	QPointer<AssetBrowserPanelWidget> m_asset_browser_panel_;
+	QPointer<OutputLogPanelWidget> m_output_log_panel_;
 	QPointer<QLineEdit> m_map_id_edit_;
 	QPointer<QDoubleSpinBox> m_spawn_x_spin_;
 	QPointer<QDoubleSpinBox> m_spawn_y_spin_;

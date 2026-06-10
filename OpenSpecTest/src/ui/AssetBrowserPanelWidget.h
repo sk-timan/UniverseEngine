@@ -10,13 +10,14 @@
 #include <QWidget>
 
 #include "asset/AssetRegistry.h"
+#include "ui/AssetBrowserItemInteraction.h"
+#include "ui/AssetTileDelegate.h"
 
-class QComboBox;
-class QShowEvent;
 class QFileSystemWatcher;
 class QLabel;
 class QLineEdit;
 class QListView;
+class QShowEvent;
 class QSplitter;
 class QTimer;
 class QTreeWidget;
@@ -24,6 +25,7 @@ class QTreeWidgetItem;
 class QAction;
 
 struct FAssetBrowserListItem;
+class AssetBrowserTypeFilterWidget;
 class AssetListModel;
 class GameApp;
 
@@ -116,10 +118,12 @@ private:
 	void RequestThumbnailForRow(int InRow, bool bHighPriority);
 	void OnFolderSelectionChanged();
 	void OnSearchTextChanged(const QString& InText);
-	void OnTypeFilterChanged(int InIndex);
+	void OnTypeFilterChanged();
 	void OnGridContextMenuRequested(const QPoint& InPos);
+	void ShowGridBackgroundContextMenu(const QPoint& InPos);
 	void OnFolderTreeContextMenuRequested(const QPoint& InPos);
 	void OnAddNewFolderRequested();
+	void OnImportAssetsRequested();
 	void OnExternalFilesDropped(const QList<QUrl>& InFileUrls);
 	void OnThumbnailReady(const QString& InCacheKey, const QImage& InImage);
 	void OnGridScrolled();
@@ -129,6 +133,7 @@ private:
 	QTreeWidgetItem* FindFolderTreeItemByPath(const std::string& InFolderPath) const;
 	void BeginRenameSelectedFolder();
 	void BeginRenameSelectedGridFolder();
+	void BeginRenameSelectedGridItem();
 	void BeginRenameSelectedAsset();
 	void CopySelectedAsset();
 	void PasteCopiedAsset();
@@ -136,24 +141,32 @@ private:
 	void ReimportSelectedAssets();
 	void DeleteSelectedAssets();
 	void DeleteSelectedFolders();
+	void DeleteSelectedGridItems();
 	bool IsAssetGridFocused() const;
 	bool IsFolderTreeFocused() const;
 	bool IsRenderViewportFocused() const;
 	bool IsAssetDeleteShortcutEnabled() const;
+	bool IsGridDeleteShortcutEnabled() const;
 	void OnItemsDroppedToFolder(
 		const std::string& InTargetFolderPath,
 		const std::vector<std::string>& InSoftObjectPaths,
 		const std::vector<std::string>& InFolderPaths);
 	std::vector<const FAssetBrowserListItem*> GetSelectedAssetItems() const;
+	std::vector<FAssetBrowserSelectedGridItem> GetSelectedGridItems() const;
+	FAssetBrowserGridSelectionState BuildGridSelectionState() const;
 	std::vector<std::string> GetSelectedDeletableFolderPaths() const;
 	std::vector<std::string> GetSelectedGridFolderPaths() const;
-	std::vector<std::string> CollectSelectedFolderPathsForOperation() const;
 	bool CanRenameFolderPath(const std::string& InFolderPath) const;
 	bool CanDeleteFolderItem(const QTreeWidgetItem* InItem) const;
 	bool RenameFolderByPath(const std::string& InFolderPath, const std::string& InNewFolderName);
+	void ApplyAssetGridTileSize(int InThumbnailSize);
+	void AdjustAssetGridTileSize(int InWheelDeltaY);
 	void RefreshAfterAssetDiskMutation();
 	void OnFolderItemChanged(QTreeWidgetItem* InItem, int InColumn);
 	void SelectFolderTreeItemByPath(const std::string& InFolderPath);
+	void SyncSelectedFolderPathsFromTree();
+	void RestoreFolderTreeSelection();
+	const std::vector<std::string>& GetActiveFolderFilterPaths() const;
 	bool CanRenameFolderItem(const QTreeWidgetItem* InItem) const;
 	bool CanCreateFolderUnderItem(const QTreeWidgetItem* InItem) const;
 	bool CanImportIntoSelectedFolder() const;
@@ -161,7 +174,7 @@ private:
 
 	GameApp* m_game_app_ = nullptr;
 	QLineEdit* m_search_edit_ = nullptr;
-	QComboBox* m_type_filter_combo_ = nullptr;
+	AssetBrowserTypeFilterWidget* m_type_filter_widget_ = nullptr;
 	QTreeWidget* m_folder_tree_ = nullptr;
 	QListView* m_asset_grid_ = nullptr;
 	AssetListModel* m_list_model_ = nullptr;
@@ -177,8 +190,8 @@ private:
 
 	std::vector<FAssetRegistryEntry> m_all_entries_;
 	std::string m_selected_folder_path_ = "All";
+	std::vector<std::string> m_selected_folder_paths_ = {"All"};
 	QString m_search_text_;
-	QString m_type_filter_;
 	uint64_t m_last_registry_revision_ = 0;
 	uint64_t m_uasset_disk_fingerprint_ = 0;
 	uint64_t m_directory_disk_fingerprint_ = 0;
@@ -188,4 +201,5 @@ private:
 	bool m_b_initial_splitter_applied_ = false;
 	bool m_b_can_auto_switch_to_all_types_on_search_ = true;
 	bool m_b_can_auto_switch_to_none_on_search_clear_ = false;
+	int m_asset_tile_thumbnail_size_ = kDefaultAssetTileThumbnailSize;
 };

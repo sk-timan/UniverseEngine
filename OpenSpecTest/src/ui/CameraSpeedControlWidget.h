@@ -26,6 +26,8 @@ signals:
 
 protected:
 	bool eventFilter(QObject* InWatched, QEvent* InEvent) override;
+	void resizeEvent(QResizeEvent* InEvent) override;
+	void showEvent(QShowEvent* InEvent) override;
 
 private slots:
 	void OnTriggerClicked();
@@ -34,6 +36,7 @@ private slots:
 
 private:
 	void BuildUi();
+	void UpdateMask();
 	void UpdateTriggerLabel();
 	void UpdateSpeedValueLabel();
 	void PositionPopup();

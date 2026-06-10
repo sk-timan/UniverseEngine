@@ -10,38 +10,153 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMouseEvent>
+#include <QPainter>
+#include <QPainterPath>
+#include <QPaintEvent>
 #include <QPushButton>
+#include <QRegion>
+#include <QResizeEvent>
+#include <QShowEvent>
 #include <QSlider>
 #include <QSizePolicy>
 #include <QVBoxLayout>
 
 namespace
 {
-	constexpr int kMinCameraSpeed = 1;
-	constexpr int kMaxCameraSpeed = 32;
+constexpr int kMinCameraSpeed = 1;
+constexpr int kMaxCameraSpeed = 32;
+constexpr int kTriggerButtonHeight = 22;
+constexpr int kTriggerButtonMinWidth = 52;
+
+void DrawCameraIcon(QPainter& InPainter, const QRectF& InRect)
+{
+	InPainter.save();
+	InPainter.setRenderHint(QPainter::Antialiasing, true);
+	InPainter.setPen(Qt::NoPen);
+	InPainter.setBrush(QColor("#c8c8cc"));
+
+	const qreal CenterY = InRect.center().y();
+	const qreal BodyLeft = InRect.left() + InRect.width() * 0.34f;
+	const QRectF BodyRect(BodyLeft, CenterY - InRect.height() * 0.24f, InRect.width() * 0.48f, InRect.height() * 0.48f);
+	InPainter.drawRoundedRect(BodyRect, 2.0, 2.0);
+
+	const QRectF ViewfinderRect(
+		BodyRect.left() + BodyRect.width() * 0.22f,
+		BodyRect.top() - InRect.height() * 0.18f,
+		BodyRect.width() * 0.42f,
+		InRect.height() * 0.16f);
+	InPainter.drawRoundedRect(ViewfinderRect, 1.5, 1.5);
+
+	QPolygonF LensTriangle;
+	LensTriangle << QPointF(BodyRect.left() - InRect.width() * 0.18f, CenterY)
+				 << QPointF(BodyRect.left() + 1.0, CenterY - InRect.height() * 0.13f)
+				 << QPointF(BodyRect.left() + 1.0, CenterY + InRect.height() * 0.13f);
+	InPainter.drawPolygon(LensTriangle);
+
+	InPainter.restore();
+}
+
+class CameraSpeedTriggerButton final : public QPushButton
+{
+public:
+	explicit CameraSpeedTriggerButton(QWidget* InParent = nullptr)
+		: QPushButton(InParent)
+	{
+		setFlat(true);
+		setCursor(Qt::PointingHandCursor);
+		setFocusPolicy(Qt::NoFocus);
+		setFixedHeight(kTriggerButtonHeight);
+		setMinimumWidth(kTriggerButtonMinWidth);
+		setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
+		setStyleSheet(QStringLiteral("border: none; background: transparent; padding: 0px; margin: 0px;"));
+	}
+
+	void SetSpeedValue(int InSpeed)
+	{
+		if (m_speed_value_ == InSpeed)
+		{
+			return;
+		}
+
+		m_speed_value_ = InSpeed;
+		update();
+		updateGeometry();
+	}
+
+	QSize sizeHint() const override
+	{
+		QFontMetrics Metrics(font());
+		const int TextWidth = Metrics.horizontalAdvance(QString::number(m_speed_value_));
+		const int Width = 12 + 16 + 6 + TextWidth + 10;
+		return {std::max(kTriggerButtonMinWidth, Width), kTriggerButtonHeight};
+	}
+
+protected:
+	void paintEvent(QPaintEvent* InEvent) override
+	{
+		(void)InEvent;
+
+		QPainter Painter(this);
+		Painter.setRenderHint(QPainter::Antialiasing, true);
+
+		const QRectF PillRect = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+		const qreal CornerRadius = PillRect.height() * 0.5;
+
+		QColor BackgroundColor(32, 32, 36, 215);
+		QColor BorderColor(70, 70, 76, 180);
+		if (isDown())
+		{
+			BackgroundColor = QColor(24, 24, 28, 235);
+			BorderColor = QColor(110, 110, 118, 210);
+		}
+		else if (underMouse())
+		{
+			BackgroundColor = QColor(48, 48, 54, 230);
+			BorderColor = QColor(95, 95, 104, 210);
+		}
+
+		Painter.setPen(QPen(BorderColor, 1.0));
+		Painter.setBrush(BackgroundColor);
+		Painter.drawRoundedRect(PillRect, CornerRadius, CornerRadius);
+
+		const QRectF IconRect(PillRect.left() + 8.0, PillRect.top() + 3.0, 16.0, PillRect.height() - 6.0);
+		DrawCameraIcon(Painter, IconRect);
+
+		QFont ValueFont = font();
+		ValueFont.setPointSize(9);
+		ValueFont.setWeight(QFont::DemiBold);
+		Painter.setFont(ValueFont);
+		Painter.setPen(QColor("#e4e4e8"));
+
+		const QRectF TextRect(PillRect.left() + 28.0, PillRect.top(), PillRect.width() - 34.0, PillRect.height());
+		Painter.drawText(TextRect, Qt::AlignVCenter | Qt::AlignHCenter, QString::number(m_speed_value_));
+	}
+
+private:
+	int m_speed_value_ = 8;
+};
 }
 
 CameraSpeedControlWidget::CameraSpeedControlWidget(QWidget* InParent)
 	: QWidget(InParent)
 {
-	setAttribute(Qt::WA_StyledBackground, true);
 	setAttribute(Qt::WA_NoSystemBackground, true);
+	setAutoFillBackground(false);
 	setStyleSheet(QStringLiteral("background: transparent;"));
 	BuildUi();
+	adjustSize();
+	setFixedSize(sizeHint());
 	qApp->installEventFilter(this);
 }
 
 void CameraSpeedControlWidget::BuildUi()
 {
 	auto* RootLayout = new QHBoxLayout(this);
-	RootLayout->setContentsMargins(8, 8, 8, 0);
+	RootLayout->setContentsMargins(0, 0, 0, 0);
 	RootLayout->setSpacing(0);
 
-	m_trigger_button_ = new QPushButton(this);
+	m_trigger_button_ = new CameraSpeedTriggerButton(this);
 	m_trigger_button_->setObjectName("CameraSpeedTrigger");
-	m_trigger_button_->setCursor(Qt::PointingHandCursor);
-	m_trigger_button_->setFixedHeight(26);
-	m_trigger_button_->setMinimumWidth(56);
 	m_trigger_button_->setToolTip(tr("相机移动速度"));
 	connect(m_trigger_button_, &QPushButton::clicked, this, &CameraSpeedControlWidget::OnTriggerClicked);
 	RootLayout->addWidget(m_trigger_button_);
@@ -99,6 +214,38 @@ void CameraSpeedControlWidget::BuildUi()
 	m_popup_frame_->hide();
 }
 
+void CameraSpeedControlWidget::UpdateMask()
+{
+	if (width() <= 0 || height() <= 0)
+	{
+		return;
+	}
+
+	const qreal Radius = height() * 0.5;
+	QPainterPath Path;
+	Path.addRoundedRect(QRectF(rect()), Radius, Radius);
+	setMask(QRegion(Path.toFillPolygon().toPolygon()));
+}
+
+void CameraSpeedControlWidget::resizeEvent(QResizeEvent* InEvent)
+{
+	QWidget::resizeEvent(InEvent);
+	UpdateMask();
+
+	if (QWidget* Parent = parentWidget())
+	{
+		constexpr int kOverlayMargin = 8;
+		const int PosX = Parent->width() - width() - kOverlayMargin;
+		move(std::max(0, PosX), kOverlayMargin);
+	}
+}
+
+void CameraSpeedControlWidget::showEvent(QShowEvent* InEvent)
+{
+	QWidget::showEvent(InEvent);
+	UpdateMask();
+}
+
 void CameraSpeedControlWidget::SetCameraSpeed(int InSpeed)
 {
 	const int ClampedSpeed = std::clamp(InSpeed, kMinCameraSpeed, kMaxCameraSpeed);
@@ -147,11 +294,26 @@ float CameraSpeedControlWidget::GetCameraSpeedScalar() const
 
 void CameraSpeedControlWidget::UpdateTriggerLabel()
 {
-	if (!m_trigger_button_)
+	if (m_trigger_button_ == nullptr)
 	{
 		return;
 	}
-	m_trigger_button_->setText(QStringLiteral("%1").arg(m_camera_speed_));
+
+	if (auto* TriggerButton = dynamic_cast<CameraSpeedTriggerButton*>(m_trigger_button_))
+	{
+		TriggerButton->SetSpeedValue(m_camera_speed_);
+	}
+	else
+	{
+		m_trigger_button_->setText(QString::number(m_camera_speed_));
+	}
+
+	const QSize NewSize = sizeHint();
+	if (NewSize != size())
+	{
+		setFixedSize(NewSize);
+		UpdateMask();
+	}
 }
 
 void CameraSpeedControlWidget::UpdateSpeedValueLabel()
@@ -170,7 +332,7 @@ void CameraSpeedControlWidget::PositionPopup()
 		return;
 	}
 
-	const QPoint Anchor = m_trigger_button_->mapToGlobal(QPoint(0, m_trigger_button_->height() + 2));
+	const QPoint Anchor = m_trigger_button_->mapToGlobal(QPoint(0, m_trigger_button_->height() + 4));
 	m_popup_frame_->move(Anchor.x() + m_trigger_button_->width() - m_popup_frame_->width(), Anchor.y());
 }
 
@@ -235,6 +397,7 @@ void CameraSpeedControlWidget::OnScalarEditingFinished()
 
 bool CameraSpeedControlWidget::eventFilter(QObject* InWatched, QEvent* InEvent)
 {
+	(void)InWatched;
 	if (m_is_popup_visible_ && InEvent->type() == QEvent::MouseButtonPress)
 	{
 		auto* MouseEvent = dynamic_cast<QMouseEvent*>(InEvent);

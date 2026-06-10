@@ -8,6 +8,8 @@
 
 namespace
 {
+constexpr const char* kAssetTileThumbnailSizeProperty = "assetTileThumbnailSize";
+
 QWidget* ResolveAssetTilePropertyHost(const QStyleOptionViewItem& InOption)
 {
 	if (InOption.widget == nullptr)
@@ -57,6 +59,44 @@ int ReadAssetTileRowProperty(const QStyleOptionViewItem& InOption, const char* I
 }
 } // namespace
 
+FAssetTileMetrics BuildAssetTileMetrics(int InThumbnailSize)
+{
+	FAssetTileMetrics Metrics;
+	Metrics.ThumbnailSize = qBound(kMinAssetTileThumbnailSize, InThumbnailSize, kMaxAssetTileThumbnailSize);
+	Metrics.TileWidth = Metrics.ThumbnailSize + kAssetTileHorizontalPadding;
+	Metrics.TileHeight = Metrics.ThumbnailSize + kAssetTileTextAreaHeight;
+	return Metrics;
+}
+
+QSize BuildAssetTileSize(int InThumbnailSize)
+{
+	const FAssetTileMetrics Metrics = BuildAssetTileMetrics(InThumbnailSize);
+	return {Metrics.TileWidth, Metrics.TileHeight};
+}
+
+int ReadAssetTileThumbnailSize(const QStyleOptionViewItem& InOption)
+{
+	if (QWidget* HostWidget = ResolveAssetTilePropertyHost(InOption))
+	{
+		const QVariant HostValue = HostWidget->property(kAssetTileThumbnailSizeProperty);
+		if (HostValue.isValid())
+		{
+			return qBound(kMinAssetTileThumbnailSize, HostValue.toInt(), kMaxAssetTileThumbnailSize);
+		}
+	}
+
+	if (InOption.widget != nullptr)
+	{
+		const QVariant WidgetValue = InOption.widget->property(kAssetTileThumbnailSizeProperty);
+		if (WidgetValue.isValid())
+		{
+			return qBound(kMinAssetTileThumbnailSize, WidgetValue.toInt(), kMaxAssetTileThumbnailSize);
+		}
+	}
+
+	return kDefaultAssetTileThumbnailSize;
+}
+
 AssetTileDelegate::AssetTileDelegate(QObject* InParent)
 	: QStyledItemDelegate(InParent)
 {
@@ -64,9 +104,8 @@ AssetTileDelegate::AssetTileDelegate(QObject* InParent)
 
 QSize AssetTileDelegate::sizeHint(const QStyleOptionViewItem& InOption, const QModelIndex& InIndex) const
 {
-	(void)InOption;
 	(void)InIndex;
-	return {kTileWidth, kTileHeight};
+	return BuildAssetTileSize(ReadAssetTileThumbnailSize(InOption));
 }
 
 void AssetTileDelegate::paint(
@@ -78,6 +117,9 @@ void AssetTileDelegate::paint(
 	{
 		return;
 	}
+
+	const FAssetTileMetrics TileMetrics = BuildAssetTileMetrics(ReadAssetTileThumbnailSize(InOption));
+	const int ThumbnailSize = TileMetrics.ThumbnailSize;
 
 	const QRect TileRect = InOption.rect.adjusted(2, 2, -2, -2);
 	const int DragSourceRow = ReadAssetTileRowProperty(InOption, "assetDragSourceRow");
@@ -127,10 +169,10 @@ void AssetTileDelegate::paint(
 	}
 
 	const QRect ThumbnailRect(
-		TileRect.left() + (TileRect.width() - kThumbnailSize) / 2,
+		TileRect.left() + (TileRect.width() - ThumbnailSize) / 2,
 		TileRect.top() + 4,
-		kThumbnailSize,
-		kThumbnailSize);
+		ThumbnailSize,
+		ThumbnailSize);
 	InPainter->fillRect(ThumbnailRect, QColor("#1a1a1e"));
 
 	const QImage Thumbnail = InIndex.data(static_cast<int>(EAssetListRole::ThumbnailImage)).value<QImage>();

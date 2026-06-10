@@ -35,6 +35,7 @@
 #include <QVBoxLayout>
 #include <QWidget>
 
+#include <algorithm>
 #include <cstring>
 #include <filesystem>
 #include <functional>
@@ -50,6 +51,8 @@
 #include "asset/SoftObjectPath.h"
 #include "ui/AssetBrowserPanelWidget.h"
 #include "ui/ImportModelTransformDialog.h"
+#include "ui/EditorOutputLog.h"
+#include "ui/OutputLogPanelWidget.h"
 #include "ui/ScrollablePanelWidget.h"
 #include "ui/WorldContentPanelWidget.h"
 #include "world/ActorTransform.h"
@@ -106,10 +109,6 @@ ViewportHostWidget::ViewportHostWidget(GameApp* InGameApp, QWidget* InParent)
 	m_rotate_drag_label_->hide();
 
 	SetupCameraSpeedControl();
-	if (m_camera_speed_control_)
-	{
-		Layout->addWidget(m_camera_speed_control_, 0, 0, Qt::AlignTop | Qt::AlignRight);
-	}
 }
 
 RenderViewportWidget* ViewportHostWidget::GetViewportWidget() const
@@ -141,11 +140,17 @@ void ViewportHostWidget::RaiseOverlayWidgets()
 {
 	if (m_camera_speed_control_)
 	{
+		constexpr int kOverlayMargin = 8;
+		const int PosX = width() - m_camera_speed_control_->width() - kOverlayMargin;
+		m_camera_speed_control_->move(std::max(0, PosX), kOverlayMargin);
 		m_camera_speed_control_->raise();
 		QTimer::singleShot(0, this, [this]()
 		{
 			if (m_camera_speed_control_)
 			{
+				constexpr int kOverlayMargin = 8;
+				const int PosX = width() - m_camera_speed_control_->width() - kOverlayMargin;
+				m_camera_speed_control_->move(std::max(0, PosX), kOverlayMargin);
 				m_camera_speed_control_->raise();
 			}
 		});
@@ -198,7 +203,7 @@ void ViewportHostWidget::SetupCameraSpeedControl()
 	m_camera_speed_control_->setObjectName("CameraSpeedControlRoot");
 	m_camera_speed_control_->setAttribute(Qt::WA_NativeWindow, true);
 	m_camera_speed_control_->setAttribute(Qt::WA_DontCreateNativeAncestors, true);
-	m_camera_speed_control_->setAttribute(Qt::WA_NoSystemBackground, false);
+	m_camera_speed_control_->setAttribute(Qt::WA_NoSystemBackground, true);
 	m_camera_speed_control_->raise();
 
 	SyncCameraSpeedControlFromGameApp();
@@ -466,13 +471,14 @@ void RenderViewportWidget::FlushPendingResizeIfStable()
 
 MainWindow::~MainWindow()
 {
+	EditorOutputLog::Get().Uninstall();
 	qApp->removeEventFilter(this);
 }
 
 MainWindow::MainWindow(GameApp* InGameApp)
 	: m_game_app_(InGameApp)
 {
-	resize(1480, 840);
+	resize(1600, 900);
 	setWindowTitle("OpenSpecTest - DX12 MVP (Qt UI)");
 
 	m_viewport_host_ = new ViewportHostWidget(m_game_app_, this);
@@ -487,6 +493,7 @@ MainWindow::MainWindow(GameApp* InGameApp)
 	BuildDetailPanel();
 	BuildDisplayPanel();
 	BuildAssetBrowserPanel();
+	BuildOutputLogPanel();
 	ConfigureDockLayout();
 	SyncViewportCameraSpeedControl();
 	qApp->installEventFilter(this);
@@ -775,12 +782,7 @@ void MainWindow::BuildDisplayPanel()
 
 	DisplayDock->setWidget(Container);
 	addDockWidget(Qt::RightDockWidgetArea, DisplayDock);
-
-	if (auto* WorldContentDock = findChild<QDockWidget*>("WorldContentDock"))
-	{
-		tabifyDockWidget(WorldContentDock, DisplayDock);
-		WorldContentDock->raise();
-	}
+	DisplayDock->hide();
 }
 
 void MainWindow::BuildWorldContentPanel()
@@ -843,12 +845,32 @@ void MainWindow::BuildAssetBrowserPanel()
 	addDockWidget(Qt::BottomDockWidgetArea, AssetBrowserDock);
 }
 
+void MainWindow::BuildOutputLogPanel()
+{
+	auto* OutputLogDock = new QDockWidget(tr("Output Log"), this);
+	OutputLogDock->setObjectName("OutputLogDock");
+	OutputLogDock->setAllowedAreas(
+		Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea | Qt::BottomDockWidgetArea);
+
+	m_output_log_panel_ = new OutputLogPanelWidget(OutputLogDock);
+	OutputLogDock->setWidget(m_output_log_panel_);
+	addDockWidget(Qt::BottomDockWidgetArea, OutputLogDock);
+
+	if (auto* AssetBrowserDock = findChild<QDockWidget*>("AssetBrowserDock"))
+	{
+		tabifyDockWidget(AssetBrowserDock, OutputLogDock);
+		AssetBrowserDock->raise();
+	}
+
+	EditorOutputLog::Get().Install();
+}
+
 namespace
 {
-constexpr int kBottomDockHeightPercent = 25;
-constexpr int kLeftDockWidthPercent = 18;
-constexpr int kRightDockWidthPercent = 18;
-constexpr int kWorldContentHeightPercent = 45;
+constexpr int kBottomDockHeightPercent = 32;
+constexpr int kLeftDockWidthPercent = 17;
+constexpr int kRightDockWidthPercent = 20;
+constexpr int kWorldContentHeightPercent = 38;
 } // namespace
 
 void MainWindow::ApplyInitialDockProportions()
@@ -889,6 +911,16 @@ void MainWindow::ApplyInitialDockProportions()
 		resizeDocks({AssetBrowserDock}, {BottomHeight}, Qt::Vertical);
 	}
 
+	if (QDockWidget* DisplayDock = findChild<QDockWidget*>("DisplayDock"))
+	{
+		DisplayDock->hide();
+	}
+
+	if (WorldContentDock != nullptr)
+	{
+		WorldContentDock->raise();
+	}
+
 	if (m_asset_browser_panel_ != nullptr)
 	{
 		m_asset_browser_panel_->ApplyInitialSplitterProportions();
@@ -919,7 +951,7 @@ void MainWindow::ConfigureDockLayout()
 	};
 
 	for (const char* DockObjectName :
-		{"EditorDock", "WorldContentDock", "DetailDock", "DisplayDock", "AssetBrowserDock"})
+		{"EditorDock", "WorldContentDock", "DetailDock", "DisplayDock", "AssetBrowserDock", "OutputLogDock"})
 	{
 		RelaxDockVerticalResize(findChild<QDockWidget*>(DockObjectName));
 	}
