@@ -56,7 +56,6 @@ public:
 
 	virtual void Serialize(nlohmann::json* OutObjectJson) const;
 
-	// Outer / Inner 引用树
 	void SetOuter(uint64_t InOuterObjectId);
 	uint64_t GetOuter() const;
 
@@ -71,7 +70,6 @@ private:
 	EObjectFlags ObjectFlags_ = EObjectFlags::None;
 	std::vector<uint64_t> ReferencedObjectIds_;
 
-	// 引用树
 	uint64_t OuterObjectId_ = 0;
 	std::vector<uint64_t> InnerObjectIds_;
 };

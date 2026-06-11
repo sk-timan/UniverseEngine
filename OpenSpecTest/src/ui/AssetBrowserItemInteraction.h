@@ -52,6 +52,7 @@ struct FAssetBrowserGridSelectionState
 	int FolderCount = 0;
 	int AssetCount = 0;
 	bool bIsMixedTypeSelection = false;
+	bool bIsMixedAssetTypeSelection = false;
 	bool bIsMultiSelection = false;
 };
 

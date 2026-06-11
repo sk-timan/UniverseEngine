@@ -33,6 +33,9 @@
 class UStaticMesh;
 class USkeletalMesh;
 class UPrimitiveComponent;
+class UTexture2D;
+
+struct FTextureResource;
 
 
 
@@ -102,6 +105,8 @@ public:
 	bool IsDeviceLost() const;
 
 	bool TryRecoverDevice();
+
+	bool UploadTexture2DResource(UTexture2D* InTexture, FTextureResource* OutResource);
 
 private:
 
@@ -283,6 +288,15 @@ private:
 	void MoveToNextFrame();
 
 	bool ExecuteUploadCopy(ID3D12Resource* InDestination, const void* InData, UINT64 InSize, D3D12_RESOURCE_STATES InFinalState);
+
+	bool CreateTextureSrvHeap();
+
+	bool UploadTextureMip0(UTexture2D* InTexture, FTextureResource* OutResource);
+
+	static constexpr UINT kMaxTextureSrvDescriptors = 128;
+	Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_texture_srv_heap_;
+	UINT m_texture_srv_descriptor_size_ = 0;
+	UINT m_next_texture_srv_slot_ = 0;
 
 
 

@@ -19,11 +19,18 @@
 - **当** Content Browser 展示 Type 为 SkeletalMesh 的资产
 - **那么** 系统必须为该资产生成基于几何数据的预览缩略图
 
-#### 场景:Texture 类型预留
+#### 场景:Texture2D 缩略图
 
-- **当** Registry 条目 Type 为 Texture 且存在对应 uasset 实现与 Provider
-- **那么** 系统必须生成基于纹理数据的预览缩略图
-- **备注**: 本期 Texture uasset 类型尚未实现时，必须回退至默认缩略图
+- **当** Registry 条目 Type 为 Texture2D 且 uasset 已成功 Import
+- **那么** 系统必须生成基于纹理 mip0 像素数据的预览缩略图
+- **那么** 必须使用 TextureThumbnailProvider 而非 DefaultThumbnailProvider
+- **那么** 禁止在 Texture2D 已可 Load 时仍回退至默认缩略图
+
+#### 场景:Texture 类型 Load 失败时回退
+
+- **当** Registry 条目 Type 为 Texture2D 但 uasset Load 或 payload 解析失败
+- **那么** 系统必须回退至统一默认缩略图
+- **那么** 不得阻塞 Content Browser 刷新
 
 ### 需求:非可渲染资产必须使用统一默认缩略图
 
@@ -37,7 +44,7 @@
 
 #### 场景:可渲染类型 Provider 不可用
 
-- **当** 资产 Type 标记为可渲染但无可用 Provider（如 Texture 尚未实现）
+- **当** 资产 Type 标记为可渲染但无可用 Provider（如尚未实现的自定义类型）
 - **那么** 系统必须回退至统一默认缩略图
 
 ### 需求:缩略图生成必须异步且可缓存

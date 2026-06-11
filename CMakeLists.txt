@@ -11,5 +11,9 @@ endif()
 
 project ("OpenSpecTest")
 
+if (MSVC)
+  add_compile_options(/utf-8)
+endif()
+
 # 包含子项目。
 add_subdirectory ("OpenSpecTest")

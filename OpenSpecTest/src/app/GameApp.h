@@ -16,6 +16,7 @@
 #include "editor/EditorTypes.h"
 #include "math/FTransform.h"
 #include "render/Dx12Renderer.h"
+#include "render/asset/TextureData.h"
 #include "world/ActorTransform.h"
 #include "world/World.h"
 
@@ -57,6 +58,12 @@ public:
 	bool ImportAssetFromSourceFile(
 		const std::filesystem::path& InSourceFile,
 		const std::string& InContentAssetPath,
+		std::string* OutSoftObjectPath,
+		std::string* OutErrorMessage);
+	bool ImportTextureFromSourceFile(
+		const std::filesystem::path& InSourceFile,
+		const std::string& InContentAssetPath,
+		const FTextureImportSettings& InImportSettings,
 		std::string* OutSoftObjectPath,
 		std::string* OutErrorMessage);
 	bool LoadModelToActiveLevel(

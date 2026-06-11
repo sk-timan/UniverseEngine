@@ -1,0 +1,15 @@
+asset_type: Texture2D
+asset_type_kebab: texture2d
+registry_type: Texture2D
+explore_command: "/UE-Editor-AssetExplore 新建的Texture资产"
+explored_at: "2026-06-10"
+applied_at: "2026-06-10"
+accepted_at: "2026-06-10"
+status: accepted
+apply_status: done
+accept_status: done
+archived_at: "2026-06-10"
+archive_path: "openspec/changes/archive/2026-06-10-editor-asset-texture2d"
+source_catalog: ".cursor/skills/ue-editor-asset/operation-catalog.md"
+notes: "Texture2D Content Browser 交互 Explore/Apply/验收已完成并归档"
+

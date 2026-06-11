@@ -30,11 +30,13 @@ AssetBrowserTypeFilterWidget::AssetBrowserTypeFilterWidget(QWidget* InParent)
 	m_all_types_action = m_menu->addAction(tr("全部类型"));
 	m_static_mesh_action = m_menu->addAction(tr("Static Mesh"));
 	m_skeletal_mesh_action = m_menu->addAction(tr("Skeletal Mesh"));
+	m_texture2d_action = m_menu->addAction(tr("Texture 2D"));
 	m_other_action = m_menu->addAction(tr("其它"));
 
 	m_all_types_action->setCheckable(true);
 	m_static_mesh_action->setCheckable(true);
 	m_skeletal_mesh_action->setCheckable(true);
+	m_texture2d_action->setCheckable(true);
 	m_other_action->setCheckable(true);
 
 	m_button->setMenu(m_menu);
@@ -48,6 +50,11 @@ AssetBrowserTypeFilterWidget::AssetBrowserTypeFilterWidget(QWidget* InParent)
 		&AssetBrowserTypeFilterWidget::OnSpecificTypeTriggered);
 	connect(
 		m_skeletal_mesh_action,
+		&QAction::triggered,
+		this,
+		&AssetBrowserTypeFilterWidget::OnSpecificTypeTriggered);
+	connect(
+		m_texture2d_action,
 		&QAction::triggered,
 		this,
 		&AssetBrowserTypeFilterWidget::OnSpecificTypeTriggered);
@@ -83,6 +90,10 @@ QSet<QString> AssetBrowserTypeFilterWidget::GetSelectedTypeFilters() const
 	{
 		SelectedFilters.insert(QStringLiteral("SkeletalMesh"));
 	}
+	if (m_texture2d_action->isChecked())
+	{
+		SelectedFilters.insert(QStringLiteral("Texture2D"));
+	}
 	if (m_other_action->isChecked())
 	{
 		SelectedFilters.insert(QString::fromLatin1(kTypeFilterOther));
@@ -109,12 +120,17 @@ bool AssetBrowserTypeFilterWidget::MatchesAssetType(const std::string& InAssetTy
 	{
 		if (Filter == QString::fromLatin1(kTypeFilterOther))
 		{
-			if (AssetType != QLatin1String("StaticMesh") && AssetType != QLatin1String("SkeletalMesh"))
+			if (AssetType != QLatin1String("StaticMesh")
+				&& AssetType != QLatin1String("SkeletalMesh")
+				&& AssetType != QLatin1String("Texture2D")
+				&& AssetType != QLatin1String("Texture"))
 			{
 				return true;
 			}
 		}
-		else if (AssetType == Filter)
+		else if (AssetType == Filter
+			|| (Filter == QStringLiteral("Texture2D")
+				&& (AssetType == QLatin1String("Texture2D") || AssetType == QLatin1String("Texture"))))
 		{
 			return true;
 		}
@@ -141,6 +157,7 @@ void AssetBrowserTypeFilterWidget::ApplyNoneMode()
 	m_all_types_action->setChecked(false);
 	m_static_mesh_action->setChecked(false);
 	m_skeletal_mesh_action->setChecked(false);
+	m_texture2d_action->setChecked(false);
 	m_other_action->setChecked(false);
 	UpdateButtonText();
 }
@@ -151,6 +168,7 @@ void AssetBrowserTypeFilterWidget::ApplyAllTypesMode()
 	m_all_types_action->setChecked(true);
 	m_static_mesh_action->setChecked(false);
 	m_skeletal_mesh_action->setChecked(false);
+	m_texture2d_action->setChecked(false);
 	m_other_action->setChecked(false);
 	UpdateButtonText();
 }
@@ -177,6 +195,10 @@ void AssetBrowserTypeFilterWidget::UpdateButtonText()
 	if (m_skeletal_mesh_action->isChecked())
 	{
 		Labels.push_back(tr("Skeletal Mesh"));
+	}
+	if (m_texture2d_action->isChecked())
+	{
+		Labels.push_back(tr("Texture 2D"));
 	}
 	if (m_other_action->isChecked())
 	{
@@ -226,6 +248,7 @@ void AssetBrowserTypeFilterWidget::OnAllTypesTriggered(bool bChecked)
 	m_b_none_mode = false;
 	m_static_mesh_action->setChecked(false);
 	m_skeletal_mesh_action->setChecked(false);
+	m_texture2d_action->setChecked(false);
 	m_other_action->setChecked(false);
 	UpdateButtonText();
 	emit FilterChanged();
@@ -238,6 +261,7 @@ void AssetBrowserTypeFilterWidget::OnSpecificTypeTriggered()
 
 	if (!m_static_mesh_action->isChecked()
 		&& !m_skeletal_mesh_action->isChecked()
+		&& !m_texture2d_action->isChecked()
 		&& !m_other_action->isChecked())
 	{
 		ApplyAllTypesMode();

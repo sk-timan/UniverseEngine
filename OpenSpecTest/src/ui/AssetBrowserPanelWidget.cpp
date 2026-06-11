@@ -34,8 +34,11 @@
 #include <QMessageBox>
 #include <QMimeData>
 #include <QContextMenuEvent>
+#include <QDialog>
 #include <QMouseEvent>
 #include <QItemSelectionModel>
+#include <QDir>
+#include <QProcess>
 #include <QRubberBand>
 #include <QScrollBar>
 #include <QShowEvent>
@@ -56,20 +59,51 @@
 #include "asset/AssetRenameService.h"
 #include "asset/AssetTypeInfo.h"
 #include "asset/MeshImportFactory.h"
+#include "asset/TextureImportFactory.h"
 #include "asset/ProjectPaths.h"
 #include "asset/SoftObjectPath.h"
 #include "asset/thumbnail/AssetThumbnailService.h"
+#include "render/asset/TextureData.h"
 #include "ui/AssetBrowserItemInteraction.h"
 #include "ui/AssetBrowserItemTooltipWidget.h"
 #include "ui/AssetBrowserTypeFilterWidget.h"
 #include "ui/AssetListModel.h"
 #include "ui/AssetTileDelegate.h"
+#include "ui/ImportTextureDialog.h"
+#include "ui/TexturePreviewDialog.h"
 
 namespace
 {
 constexpr int kThumbnailSize = 128;
 constexpr int kContentDiskPollIntervalMs = 1000;
 constexpr int kContentDiskRescanDebounceMs = 800;
+
+void RestoreAssetGridSelection(QAbstractItemView* InGrid, const QModelIndexList& InSnapshotIndexes)
+{
+	if (InGrid == nullptr || InSnapshotIndexes.isEmpty())
+	{
+		return;
+	}
+
+	QItemSelectionModel* SelectionModel = InGrid->selectionModel();
+	if (SelectionModel == nullptr)
+	{
+		return;
+	}
+
+	SelectionModel->clearSelection();
+	for (const QModelIndex& SnapshotIndex : InSnapshotIndexes)
+	{
+		if (SnapshotIndex.isValid())
+		{
+			SelectionModel->select(
+				SnapshotIndex,
+				QItemSelectionModel::Select | QItemSelectionModel::Rows);
+		}
+	}
+
+	SelectionModel->setCurrentIndex(InSnapshotIndexes.first(), QItemSelectionModel::Current);
+}
 
 QString FsPathToQString(const std::filesystem::path& InPath)
 {
@@ -84,6 +118,41 @@ QString FsPathToQString(const std::filesystem::path& InPath)
 QString Utf8StdStringToQString(const std::string& InUtf8Text)
 {
 	return QString::fromUtf8(InUtf8Text.c_str(), static_cast<int>(InUtf8Text.size()));
+}
+
+bool RevealFileInSystemFileManager(const QString& InFilePath)
+{
+	const QFileInfo FileInfo(InFilePath);
+	if (InFilePath.isEmpty() || !FileInfo.isAbsolute())
+	{
+		return false;
+	}
+
+#ifdef Q_OS_WIN
+	if (!FileInfo.exists())
+	{
+		return false;
+	}
+
+	const QString NativePath = QDir::toNativeSeparators(FileInfo.absoluteFilePath());
+	return QProcess::startDetached(
+		QStringLiteral("explorer.exe"),
+		{QStringLiteral("/select,") + NativePath});
+#elif defined(Q_OS_MACOS)
+	if (!FileInfo.exists())
+	{
+		return false;
+	}
+
+	return QProcess::execute(QStringLiteral("open"), {QStringLiteral("-R"), FileInfo.absoluteFilePath()}) == 0;
+#else
+	if (FileInfo.exists())
+	{
+		return QDesktopServices::openUrl(QUrl::fromLocalFile(FileInfo.absoluteFilePath()));
+	}
+
+	return QDesktopServices::openUrl(QUrl::fromLocalFile(FileInfo.absolutePath()));
+#endif
 }
 
 QString FolderPathToDisplayName(const std::string& InFolderPath)
@@ -315,6 +384,56 @@ std::filesystem::path QStringToFsPath(const QString& InPath)
 #endif
 }
 
+bool IsImportableImageExtension(const QString& InExtension)
+{
+	static const QSet<QString> SupportedExtensions = {
+		QStringLiteral("png"),
+		QStringLiteral("jpg"),
+		QStringLiteral("jpeg"),
+		QStringLiteral("tga"),
+		QStringLiteral("bmp"),
+	};
+	return SupportedExtensions.contains(InExtension.toLower());
+}
+
+bool IsImportableImageFile(const std::filesystem::path& InPath)
+{
+	if (!InPath.has_extension())
+	{
+		return false;
+	}
+
+	const QString Extension = QString::fromStdString(InPath.extension().string());
+	return IsImportableImageExtension(Extension.startsWith('.') ? Extension.mid(1) : Extension);
+}
+
+bool ExtractImportableImageFiles(const QList<QUrl>& InFileUrls, std::vector<std::filesystem::path>* OutPaths)
+{
+	if (OutPaths == nullptr)
+	{
+		return false;
+	}
+
+	OutPaths->clear();
+	for (const QUrl& FileUrl : InFileUrls)
+	{
+		if (!FileUrl.isLocalFile())
+		{
+			continue;
+		}
+
+		const std::filesystem::path LocalPath = QStringToFsPath(FileUrl.toLocalFile());
+		if (!std::filesystem::is_regular_file(LocalPath) || !IsImportableImageFile(LocalPath))
+		{
+			continue;
+		}
+
+		OutPaths->push_back(LocalPath);
+	}
+
+	return !OutPaths->empty();
+}
+
 bool IsImportableModelExtension(const QString& InExtension)
 {
 	static const QSet<QString> SupportedExtensions = {
@@ -365,6 +484,18 @@ bool ExtractImportableModelFiles(const QList<QUrl>& InFileUrls, std::vector<std:
 	}
 
 	return !OutPaths->empty();
+}
+
+bool HasImportableAssetFileMimeData(const QMimeData* InMimeData)
+{
+	if (InMimeData == nullptr || !InMimeData->hasUrls())
+	{
+		return false;
+	}
+
+	std::vector<std::filesystem::path> ImportablePaths;
+	return ExtractImportableModelFiles(InMimeData->urls(), &ImportablePaths)
+		|| ExtractImportableImageFiles(InMimeData->urls(), &ImportablePaths);
 }
 
 bool HasImportableModelFileMimeData(const QMimeData* InMimeData)
@@ -1135,7 +1266,7 @@ protected:
 
 	void dragEnterEvent(QDragEnterEvent* InEvent) override
 	{
-		if (HasImportableModelFileMimeData(InEvent->mimeData()))
+		if (HasImportableAssetFileMimeData(InEvent->mimeData()))
 		{
 			InEvent->acceptProposedAction();
 			return;
@@ -1152,7 +1283,7 @@ protected:
 
 	void dragMoveEvent(QDragMoveEvent* InEvent) override
 	{
-		if (HasImportableModelFileMimeData(InEvent->mimeData()))
+		if (HasImportableAssetFileMimeData(InEvent->mimeData()))
 		{
 			InEvent->acceptProposedAction();
 			return;
@@ -1176,7 +1307,7 @@ protected:
 
 	void dropEvent(QDropEvent* InEvent) override
 	{
-		if (HasImportableModelFileMimeData(InEvent->mimeData()))
+		if (HasImportableAssetFileMimeData(InEvent->mimeData()))
 		{
 			if (ExternalDropHandler)
 			{
@@ -1252,17 +1383,15 @@ protected:
 		if (InEvent->type() == QEvent::MouseButtonPress)
 		{
 			auto* MouseEvent = static_cast<QMouseEvent*>(InEvent);
-			if (MouseEvent->button() == Qt::RightButton)
+		if (MouseEvent->button() == Qt::RightButton)
+		{
+			const QPoint ViewportPos = MouseEvent->pos();
+			const QModelIndex Index = indexAt(ViewportPos);
+			if (Index.isValid() && selectionModel() != nullptr && selectionModel()->isSelected(Index))
 			{
-				const QPoint ViewportPos = MouseEvent->pos();
-				const QModelIndex Index = indexAt(ViewportPos);
-				if (Index.isValid() && selectionModel() != nullptr && selectionModel()->isSelected(Index))
-				{
-					selectionModel()->setCurrentIndex(Index, QItemSelectionModel::Current);
-					MouseEvent->accept();
-					return true;
-				}
+				selectionModel()->setCurrentIndex(Index, QItemSelectionModel::Current);
 			}
+		}
 		}
 
 		return QListView::eventFilter(InWatched, InEvent);
@@ -2262,19 +2391,25 @@ void AssetBrowserPanelWidget::OnExternalFilesDropped(const QList<QUrl>& InFileUr
 		return;
 	}
 
-	std::vector<std::filesystem::path> ImportablePaths;
-	if (!ExtractImportableModelFiles(InFileUrls, &ImportablePaths))
+	std::vector<std::filesystem::path> ModelPaths;
+	std::vector<std::filesystem::path> ImagePaths;
+	const bool bHasModels = ExtractImportableModelFiles(InFileUrls, &ModelPaths);
+	const bool bHasImages = ExtractImportableImageFiles(InFileUrls, &ImagePaths);
+	if (!bHasModels && !bHasImages)
 	{
 		QMessageBox::warning(
 			this,
 			tr("无法导入"),
-			tr("仅支持拖入 3D 模型文件（fbx、obj、gltf、glb、dae、3ds、blend）。"));
+			tr("仅支持拖入 3D 模型（fbx、obj、gltf、glb、dae、3ds、blend）或图片（png、jpg、jpeg、tga、bmp）。"));
 		return;
 	}
 
 	int SuccessCount = 0;
 	QStringList FailedMessages;
-	for (const std::filesystem::path& SourcePath : ImportablePaths)
+
+	const FTextureImportSettings DefaultTextureSettings;
+
+	for (const std::filesystem::path& SourcePath : ModelPaths)
 	{
 		const QString ModelName = QFileInfo(FsPathToQString(SourcePath)).completeBaseName();
 		if (ModelName.trimmed().isEmpty())
@@ -2294,6 +2429,33 @@ void AssetBrowserPanelWidget::OnExternalFilesDropped(const QList<QUrl>& InFileUr
 		{
 			FailedMessages.push_back(
 				tr("%1: %2").arg(ModelName).arg(QString::fromStdString(ErrorMessage)));
+			continue;
+		}
+
+		++SuccessCount;
+	}
+
+	for (const std::filesystem::path& SourcePath : ImagePaths)
+	{
+		const QString TextureName = QFileInfo(FsPathToQString(SourcePath)).completeBaseName();
+		if (TextureName.trimmed().isEmpty())
+		{
+			FailedMessages.push_back(tr("%1: 无效文件名").arg(FsPathToQString(SourcePath)));
+			continue;
+		}
+
+		const std::string ContentAssetPath = BuildImportAssetPath(TextureName.toUtf8().toStdString());
+		std::string SoftObjectPath;
+		std::string ErrorMessage;
+		if (!m_game_app_->ImportTextureFromSourceFile(
+				SourcePath,
+				ContentAssetPath,
+				DefaultTextureSettings,
+				&SoftObjectPath,
+				&ErrorMessage))
+		{
+			FailedMessages.push_back(
+				tr("%1: %2").arg(TextureName).arg(QString::fromStdString(ErrorMessage)));
 			continue;
 		}
 
@@ -2636,13 +2798,21 @@ const std::vector<std::string>& AssetBrowserPanelWidget::GetActiveFolderFilterPa
 
 void AssetBrowserPanelWidget::BeginRenameSelectedAsset()
 {
-	const QModelIndex CurrentIndex = m_asset_grid_->currentIndex();
-	if (!CurrentIndex.isValid())
+	const std::vector<const FAssetBrowserListItem*> SelectedItems = GetSelectedAssetItems();
+	const FAssetBrowserListItem* Item = nullptr;
+	if (SelectedItems.size() == 1)
 	{
-		return;
+		Item = SelectedItems.front();
+	}
+	else
+	{
+		const QModelIndex CurrentIndex = m_asset_grid_->currentIndex();
+		if (CurrentIndex.isValid())
+		{
+			Item = m_list_model_->GetItemAt(CurrentIndex.row());
+		}
 	}
 
-	const FAssetBrowserListItem* Item = m_list_model_->GetItemAt(CurrentIndex.row());
 	if (Item == nullptr || Item->bIsFolder)
 	{
 		return;
@@ -2902,7 +3072,7 @@ void AssetBrowserPanelWidget::ReimportSelectedAssets()
 	int SuccessCount = 0;
 	for (const FAssetBrowserListItem* Item : SelectedItems)
 	{
-		if (Item == nullptr || !AssetTypeInfo::IsMeshAssetType(Item->Entry.Type))
+		if (Item == nullptr)
 		{
 			continue;
 		}
@@ -2916,7 +3086,21 @@ void AssetBrowserPanelWidget::ReimportSelectedAssets()
 
 		std::string ErrorMessage;
 		const std::string SoftPath = FSoftObjectPath::Build(Item->Entry.AssetPath, Item->Entry.ObjectName);
-		if (!UMeshImportFactory::Reimport(SoftPath, Item->Entry.SourceFile, &ErrorMessage))
+		bool bReimportSucceeded = false;
+		if (AssetTypeInfo::IsMeshAssetType(Item->Entry.Type))
+		{
+			bReimportSucceeded = UMeshImportFactory::Reimport(SoftPath, Item->Entry.SourceFile, &ErrorMessage);
+		}
+		else if (AssetTypeInfo::IsTextureAssetType(Item->Entry.Type))
+		{
+			bReimportSucceeded = UTextureImportFactory::Reimport(SoftPath, Item->Entry.SourceFile, &ErrorMessage);
+		}
+		else
+		{
+			continue;
+		}
+
+		if (!bReimportSucceeded)
 		{
 			FailedMessages.push_back(
 				tr("%1: %2")
@@ -2943,7 +3127,7 @@ void AssetBrowserPanelWidget::ReimportSelectedAssets()
 	}
 	else if (SuccessCount == 0)
 	{
-		QMessageBox::warning(this, tr("Reimport"), tr("所选资产中没有可 Reimport 的 Mesh 资产。"));
+		QMessageBox::warning(this, tr("Reimport"), tr("所选资产中没有可 Reimport 的 Mesh 或 Texture 资产。"));
 	}
 }
 
@@ -3851,12 +4035,29 @@ void AssetBrowserPanelWidget::OnAssetGridDoubleClicked(const QModelIndex& InInde
 	}
 
 	const FAssetBrowserListItem* Item = m_list_model_->GetItemAt(InIndex.row());
-	if (Item == nullptr || !Item->bIsFolder || Item->FolderPath.empty())
+	if (Item == nullptr)
 	{
 		return;
 	}
 
-	SelectFolderTreeItemByPath(Item->FolderPath);
+	if (Item->bIsFolder && !Item->FolderPath.empty())
+	{
+		SelectFolderTreeItemByPath(Item->FolderPath);
+		return;
+	}
+
+	if (!Item->bIsFolder && AssetTypeInfo::IsTextureAssetType(Item->Entry.Type))
+	{
+		TexturePreviewDialog Dialog(this);
+		if (Dialog.LoadFromRegistryEntry(Item->Entry))
+		{
+			Dialog.exec();
+		}
+		else
+		{
+			QMessageBox::warning(this, tr("纹理预览"), tr("无法预览该 Texture 资产。"));
+		}
+	}
 }
 
 void AssetBrowserPanelWidget::RequestVisibleThumbnails()
@@ -4065,20 +4266,90 @@ void AssetBrowserPanelWidget::OnImportAssetsRequested()
 		this,
 		tr("导入"),
 		InitialDir,
-		tr("3D模型 (*.fbx *.obj *.gltf *.glb *.dae *.3ds *.blend);;所有文件 (*.*)"));
+		tr("支持的资产 (*.fbx *.obj *.gltf *.glb *.dae *.3ds *.blend *.png *.jpg *.jpeg *.tga *.bmp);;3D模型 (*.fbx *.obj *.gltf *.glb *.dae *.3ds *.blend);;图片 (*.png *.jpg *.jpeg *.tga *.bmp);;所有文件 (*.*)"));
 	if (FilePaths.isEmpty())
 	{
 		return;
 	}
 
-	QList<QUrl> FileUrls;
-	FileUrls.reserve(FilePaths.size());
+	int SuccessCount = 0;
+	QStringList FailedMessages;
+	const FTextureImportSettings DefaultTextureSettings;
+
 	for (const QString& FilePath : FilePaths)
 	{
-		FileUrls.push_back(QUrl::fromLocalFile(FilePath));
+		const std::filesystem::path SourcePath = QStringToFsPath(FilePath);
+		const QString AssetBaseName = QFileInfo(FilePath).completeBaseName();
+		if (AssetBaseName.trimmed().isEmpty())
+		{
+			FailedMessages.push_back(tr("%1: 无效文件名").arg(FilePath));
+			continue;
+		}
+
+		std::string SoftObjectPath;
+		std::string ErrorMessage;
+
+		if (IsImportableImageFile(SourcePath))
+		{
+			ImportTextureDialog Dialog(AssetBaseName, this);
+			Dialog.SetContentAssetPath(
+				QString::fromStdString(BuildImportAssetPath(AssetBaseName.toUtf8().toStdString())));
+			if (Dialog.exec() != QDialog::Accepted)
+			{
+				continue;
+			}
+
+			if (!m_game_app_->ImportTextureFromSourceFile(
+					SourcePath,
+					Dialog.GetContentAssetPath().toUtf8().toStdString(),
+					Dialog.GetImportSettings(),
+					&SoftObjectPath,
+					&ErrorMessage))
+			{
+				FailedMessages.push_back(
+					tr("%1: %2").arg(AssetBaseName).arg(QString::fromStdString(ErrorMessage)));
+				continue;
+			}
+		}
+		else if (IsImportableModelFile(SourcePath))
+		{
+			const std::string ContentAssetPath = BuildImportAssetPath(AssetBaseName.toUtf8().toStdString());
+			if (!m_game_app_->ImportAssetFromSourceFile(
+					SourcePath,
+					ContentAssetPath,
+					&SoftObjectPath,
+					&ErrorMessage))
+			{
+				FailedMessages.push_back(
+					tr("%1: %2").arg(AssetBaseName).arg(QString::fromStdString(ErrorMessage)));
+				continue;
+			}
+		}
+		else
+		{
+			FailedMessages.push_back(tr("%1: 不支持的文件类型").arg(FilePath));
+			continue;
+		}
+
+		++SuccessCount;
 	}
 
-	OnExternalFilesDropped(FileUrls);
+	if (SuccessCount > 0)
+	{
+		m_last_registry_revision_ = 0;
+		m_uasset_disk_fingerprint_ = ComputeUAssetDiskFingerprint();
+		m_directory_disk_fingerprint_ = ComputeDirectoryDiskFingerprint();
+		MaybeUpdateContentDiskWatchPaths();
+		RefreshFromRegistry();
+	}
+
+	if (!FailedMessages.isEmpty())
+	{
+		QMessageBox::warning(
+			this,
+			SuccessCount > 0 ? tr("部分导入失败") : tr("导入失败"),
+			FailedMessages.join('\n'));
+	}
 }
 
 void AssetBrowserPanelWidget::ShowGridBackgroundContextMenu(const QPoint& InPos)
@@ -4130,43 +4401,86 @@ void AssetBrowserPanelWidget::OnGridContextMenuRequested(const QPoint& InPos)
 	}
 
 	const FAssetBrowserItemCapabilities& Capabilities = SelectionState.Capabilities;
-	const bool bIsHomogeneousAssets =
-		!SelectionState.bIsMixedTypeSelection && SelectionState.AssetCount > 0;
+
+	const QString SoftPath = Index.data(static_cast<int>(EAssetListRole::SoftObjectPath)).toString();
+	const QString UAssetPath = Index.data(static_cast<int>(EAssetListRole::UAssetFilePath)).toString();
+	const QModelIndexList SelectionSnapshot =
+		m_asset_grid_->selectionModel() != nullptr
+		? m_asset_grid_->selectionModel()->selectedIndexes()
+		: QModelIndexList{};
 
 	QMenu Menu(this);
-	QAction* ShowInExplorerAction = nullptr;
-	QAction* CopyPathAction = nullptr;
-	QAction* RenameAction = nullptr;
-	QAction* DuplicateAction = nullptr;
-	QAction* ReimportAction = nullptr;
+
+	auto RestoreAssetGridFocus = [this]()
+	{
+		if (m_asset_grid_ != nullptr && m_asset_grid_->viewport() != nullptr)
+		{
+			m_asset_grid_->viewport()->setFocus(Qt::OtherFocusReason);
+		}
+	};
+
+	auto RestoreSelectionAndFocus = [this, SelectionSnapshot, RestoreAssetGridFocus]()
+	{
+		RestoreAssetGridSelection(m_asset_grid_, SelectionSnapshot);
+		RestoreAssetGridFocus();
+	};
 
 	if (Capabilities.bCanShowInExplorer)
 	{
-		ShowInExplorerAction = Menu.addAction(tr("在资源管理器中显示"));
+		QAction* Action = Menu.addAction(tr("在资源管理器中显示"));
+		connect(Action, &QAction::triggered, this, [this, UAssetPath, RestoreAssetGridFocus]()
+		{
+			RestoreAssetGridFocus();
+			if (!RevealFileInSystemFileManager(UAssetPath))
+			{
+				QMessageBox::warning(this, tr("在资源管理器中显示"), tr("无法打开并选中该资产文件。"));
+			}
+		});
 	}
 	if (Capabilities.bCanCopySoftObjectPath)
 	{
-		CopyPathAction = Menu.addAction(tr("复制 SoftObjectPath"));
+		QAction* Action = Menu.addAction(tr("复制 SoftObjectPath"));
+		connect(Action, &QAction::triggered, this, [SoftPath, RestoreAssetGridFocus]()
+		{
+			RestoreAssetGridFocus();
+			QApplication::clipboard()->setText(SoftPath);
+		});
 	}
 	if (Capabilities.bCanDuplicate)
 	{
-		DuplicateAction = Menu.addAction(tr("创建副本"));
+		QAction* Action = Menu.addAction(tr("创建副本"));
+		connect(Action, &QAction::triggered, this, [this, RestoreSelectionAndFocus]()
+		{
+			RestoreSelectionAndFocus();
+			DuplicateSelectedAssets();
+		});
 	}
 	if (Capabilities.bCanRename)
 	{
-		RenameAction = Menu.addAction(tr("重命名"));
-		RenameAction->setShortcut(QKeySequence(Qt::Key_F2));
+		QAction* Action = Menu.addAction(tr("重命名"));
+		connect(Action, &QAction::triggered, this, [this, RestoreSelectionAndFocus]()
+		{
+			RestoreSelectionAndFocus();
+			BeginRenameSelectedGridItem();
+		});
 	}
 	if (Capabilities.bCanReimport)
 	{
-		ReimportAction = Menu.addAction(tr("Reimport"));
+		QAction* Action = Menu.addAction(tr("Reimport"));
+		connect(Action, &QAction::triggered, this, [this, RestoreSelectionAndFocus]()
+		{
+			RestoreSelectionAndFocus();
+			ReimportSelectedAssets();
+		});
 	}
-
-	QAction* DeleteAction = nullptr;
 	if (Capabilities.bCanDelete)
 	{
-		DeleteAction = Menu.addAction(tr("删除"));
-		DeleteAction->setShortcut(QKeySequence::Delete);
+		QAction* Action = Menu.addAction(tr("删除"));
+		connect(Action, &QAction::triggered, this, [this, RestoreSelectionAndFocus]()
+		{
+			RestoreSelectionAndFocus();
+			DeleteSelectedGridItems();
+		});
 	}
 
 	if (Menu.isEmpty())
@@ -4174,60 +4488,7 @@ void AssetBrowserPanelWidget::OnGridContextMenuRequested(const QPoint& InPos)
 		return;
 	}
 
-	const QString SoftPath = Index.data(static_cast<int>(EAssetListRole::SoftObjectPath)).toString();
-	const QString UAssetPath = Index.data(static_cast<int>(EAssetListRole::UAssetFilePath)).toString();
-
-	QAction* Chosen = Menu.exec(m_asset_grid_->viewport()->mapToGlobal(InPos));
-	if (Chosen == ShowInExplorerAction)
-	{
-		const QFileInfo FileInfo(UAssetPath);
-		QDesktopServices::openUrl(QUrl::fromLocalFile(FileInfo.absolutePath()));
-	}
-	else if (Chosen == CopyPathAction)
-	{
-		QApplication::clipboard()->setText(SoftPath);
-	}
-	else if (Chosen == DuplicateAction)
-	{
-		DuplicateSelectedAssets();
-	}
-	else if (Chosen == RenameAction)
-	{
-		BeginRenameSelectedGridItem();
-	}
-	else if (Chosen == ReimportAction)
-	{
-		if (SelectionState.bIsMultiSelection && bIsHomogeneousAssets)
-		{
-			ReimportSelectedAssets();
-		}
-		else
-		{
-			const FAssetBrowserListItem* Item = m_list_model_->GetItemAt(Index.row());
-			if (Item == nullptr || Item->Entry.SourceFile.empty())
-			{
-				QMessageBox::warning(this, tr("Reimport"), tr("该资产缺少 SourceFile，无法 Reimport。"));
-				return;
-			}
-
-			std::string ErrorMessage;
-			if (!UMeshImportFactory::Reimport(SoftPath.toStdString(), Item->Entry.SourceFile, &ErrorMessage))
-			{
-				QMessageBox::warning(
-					this,
-					tr("Reimport 失败"),
-					tr("无法 Reimport: %1").arg(QString::fromStdString(ErrorMessage)));
-				return;
-			}
-
-			FAssetThumbnailService::Get().InvalidateEntry(Item->Entry);
-			RefreshFromRegistry();
-		}
-	}
-	else if (Chosen == DeleteAction)
-	{
-		DeleteSelectedGridItems();
-	}
+	Menu.exec(m_asset_grid_->viewport()->mapToGlobal(InPos));
 }
 
 void AssetBrowserPanelWidget::OnThumbnailReady(const QString& InCacheKey, const QImage& InImage)

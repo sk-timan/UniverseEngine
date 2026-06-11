@@ -20,6 +20,7 @@
 #include "editor/EditorViewMatrices.h"
 #include "asset/AssetRegistry.h"
 #include "asset/MeshImportFactory.h"
+#include "asset/TextureImportFactory.h"
 #include "asset/ProjectPaths.h"
 #include "data/MeshImporter.h"
 #include "world/Actor.h"
@@ -959,6 +960,55 @@ bool GameApp::ImportAssetFromSourceFile(
 		{
 			return false;
 		}
+	}
+
+	if (OutSoftObjectPath != nullptr)
+	{
+		*OutSoftObjectPath = SoftPath;
+	}
+	return true;
+}
+
+bool GameApp::ImportTextureFromSourceFile(
+	const std::filesystem::path& InSourceFile,
+	const std::string& InContentAssetPath,
+	const FTextureImportSettings& InImportSettings,
+	std::string* OutSoftObjectPath,
+	std::string* OutErrorMessage)
+{
+	if (OutErrorMessage != nullptr)
+	{
+		OutErrorMessage->clear();
+	}
+	if (OutSoftObjectPath != nullptr)
+	{
+		OutSoftObjectPath->clear();
+	}
+	if (InSourceFile.empty() || !std::filesystem::exists(InSourceFile))
+	{
+		if (OutErrorMessage != nullptr)
+		{
+			*OutErrorMessage = "Source texture file does not exist: " + InSourceFile.string();
+		}
+		return false;
+	}
+
+	const std::filesystem::path CanonicalPath = std::filesystem::weakly_canonical(InSourceFile);
+	const std::string AssetPath = InContentAssetPath.empty()
+		? std::string("Textures/Imported/") + CanonicalPath.stem().string()
+		: InContentAssetPath;
+	const std::string ObjectName = std::filesystem::path(AssetPath).filename().string();
+
+	FTextureImportRequest ImportRequest;
+	ImportRequest.SourceFile = CanonicalPath;
+	ImportRequest.AssetPath = AssetPath;
+	ImportRequest.ObjectName = ObjectName.empty() ? CanonicalPath.stem().string() : ObjectName;
+	ImportRequest.ImportSettings = InImportSettings;
+
+	std::string SoftPath;
+	if (UTextureImportFactory::ImportTexture2DAndSave(ImportRequest, &SoftPath, OutErrorMessage) == nullptr)
+	{
+		return false;
 	}
 
 	if (OutSoftObjectPath != nullptr)

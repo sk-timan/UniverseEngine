@@ -8,6 +8,7 @@
 #include "asset/thumbnail/DefaultThumbnailProvider.h"
 #include "asset/thumbnail/IAssetThumbnailProvider.h"
 #include "asset/thumbnail/MeshThumbnailProvider.h"
+#include "asset/thumbnail/TextureThumbnailProvider.h"
 
 FAssetThumbnailService& FAssetThumbnailService::Get()
 {
@@ -18,6 +19,7 @@ FAssetThumbnailService& FAssetThumbnailService::Get()
 FAssetThumbnailService::FAssetThumbnailService()
 {
 	Providers_.push_back(std::make_unique<MeshThumbnailProvider>());
+	Providers_.push_back(std::make_unique<TextureThumbnailProvider>());
 	DefaultProvider_ = std::make_unique<DefaultThumbnailProvider>();
 }
 

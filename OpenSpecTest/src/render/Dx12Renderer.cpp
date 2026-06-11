@@ -16,6 +16,8 @@
 #include "data/AssimpCoordinate.h"
 #include "render/asset/StaticMesh.h"
 #include "render/asset/SkeletalMesh.h"
+#include "render/asset/Texture2D.h"
+#include "render/asset/TextureResource.h"
 #include "editor/EditorViewMatrices.h"
 #include "render/RenderCollector.h"
 
@@ -589,7 +591,7 @@ bool Dx12Renderer::CreateDeviceResources(HWND InHwnd, UINT InWidth, UINT InHeigh
 
 bool Dx12Renderer::CreateSceneResources()
 {
-	return CreatePipelineState() && CreateConstantBuffers() && CreateMeshBuffers();
+	return CreatePipelineState() && CreateConstantBuffers() && CreateMeshBuffers() && CreateTextureSrvHeap();
 }
 
 bool Dx12Renderer::CreatePipelineState()
@@ -2016,4 +2018,230 @@ bool Dx12Renderer::CreateDepthStencil()
 	DsvDesc.Flags = D3D12_DSV_FLAG_NONE;
 	m_device_->CreateDepthStencilView(m_depth_stencil_.Get(), &DsvDesc, m_dsv_heap_->GetCPUDescriptorHandleForHeapStart());
 	return true;
+}
+
+bool Dx12Renderer::CreateTextureSrvHeap()
+{
+	if (m_texture_srv_heap_ != nullptr)
+	{
+		return true;
+	}
+
+	if (m_device_ == nullptr)
+	{
+		return false;
+	}
+
+	D3D12_DESCRIPTOR_HEAP_DESC HeapDesc{};
+	HeapDesc.NumDescriptors = kMaxTextureSrvDescriptors;
+	HeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+	HeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+	if (FAILED(m_device_->CreateDescriptorHeap(&HeapDesc, IID_PPV_ARGS(&m_texture_srv_heap_))))
+	{
+		return false;
+	}
+
+	m_texture_srv_descriptor_size_ =
+		m_device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+	m_next_texture_srv_slot_ = 0;
+	return true;
+}
+
+bool Dx12Renderer::UploadTextureMip0(UTexture2D* InTexture, FTextureResource* OutResource)
+{
+	if (InTexture == nullptr || OutResource == nullptr || m_device_ == nullptr)
+	{
+		return false;
+	}
+
+	const FTexturePlatformData& PlatformData = InTexture->GetPlatformData();
+	const FTextureMipLevel* Mip0 = PlatformData.GetMip(0);
+	if (Mip0 == nullptr || Mip0->Width == 0 || Mip0->Height == 0 || Mip0->Data.empty())
+	{
+		return false;
+	}
+
+	if (!CreateTextureSrvHeap())
+	{
+		return false;
+	}
+
+	if (m_next_texture_srv_slot_ >= kMaxTextureSrvDescriptors)
+	{
+		return false;
+	}
+
+	const UINT Width = Mip0->Width;
+	const UINT Height = Mip0->Height;
+	const DXGI_FORMAT Format =
+		InTexture->GetSRGB() ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8G8B8A8_UNORM;
+
+	D3D12_HEAP_PROPERTIES DefaultHeapProps{};
+	DefaultHeapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+	D3D12_RESOURCE_DESC TextureDesc{};
+	TextureDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+	TextureDesc.Width = Width;
+	TextureDesc.Height = Height;
+	TextureDesc.DepthOrArraySize = 1;
+	TextureDesc.MipLevels = 1;
+	TextureDesc.Format = Format;
+	TextureDesc.SampleDesc.Count = 1;
+	TextureDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+	TextureDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+	Microsoft::WRL::ComPtr<ID3D12Resource> GpuTexture;
+	if (FAILED(m_device_->CreateCommittedResource(
+			&DefaultHeapProps,
+			D3D12_HEAP_FLAG_NONE,
+			&TextureDesc,
+			D3D12_RESOURCE_STATE_COPY_DEST,
+			nullptr,
+			IID_PPV_ARGS(&GpuTexture))))
+	{
+		return false;
+	}
+
+	const UINT64 RowPitch = AlignTo(static_cast<UINT64>(Width) * 4u, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
+	const UINT64 UploadSize = RowPitch * static_cast<UINT64>(Height);
+
+	D3D12_HEAP_PROPERTIES UploadHeapProps{};
+	UploadHeapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
+
+	D3D12_RESOURCE_DESC UploadDesc{};
+	UploadDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+	UploadDesc.Width = UploadSize;
+	UploadDesc.Height = 1;
+	UploadDesc.DepthOrArraySize = 1;
+	UploadDesc.MipLevels = 1;
+	UploadDesc.SampleDesc.Count = 1;
+	UploadDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+	Microsoft::WRL::ComPtr<ID3D12Resource> UploadBuffer;
+	if (FAILED(m_device_->CreateCommittedResource(
+			&UploadHeapProps,
+			D3D12_HEAP_FLAG_NONE,
+			&UploadDesc,
+			D3D12_RESOURCE_STATE_GENERIC_READ,
+			nullptr,
+			IID_PPV_ARGS(&UploadBuffer))))
+	{
+		return false;
+	}
+
+	void* MappedUpload = nullptr;
+	if (FAILED(UploadBuffer->Map(0, nullptr, &MappedUpload)))
+	{
+		return false;
+	}
+
+	auto* UploadBytes = static_cast<uint8_t*>(MappedUpload);
+	for (UINT RowIndex = 0; RowIndex < Height; ++RowIndex)
+	{
+		std::memcpy(
+			UploadBytes + RowIndex * RowPitch,
+			Mip0->Data.data() + static_cast<size_t>(RowIndex) * static_cast<size_t>(Width) * 4u,
+			static_cast<size_t>(Width) * 4u);
+	}
+	UploadBuffer->Unmap(0, nullptr);
+
+	if (!WaitForGpuWithTimeout(1000))
+	{
+		return false;
+	}
+
+	ID3D12CommandAllocator* UploadAllocator = m_command_allocators_[0].Get();
+	if (UploadAllocator == nullptr || m_command_list_ == nullptr)
+	{
+		return false;
+	}
+
+	if (FAILED(UploadAllocator->Reset()))
+	{
+		return false;
+	}
+	if (FAILED(m_command_list_->Reset(UploadAllocator, nullptr)))
+	{
+		return false;
+	}
+
+	D3D12_TEXTURE_COPY_LOCATION DestinationLocation{};
+	DestinationLocation.pResource = GpuTexture.Get();
+	DestinationLocation.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+	DestinationLocation.SubresourceIndex = 0;
+
+	D3D12_TEXTURE_COPY_LOCATION SourceLocation{};
+	SourceLocation.pResource = UploadBuffer.Get();
+	SourceLocation.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+	SourceLocation.PlacedFootprint.Offset = 0;
+	SourceLocation.PlacedFootprint.Footprint.Format = Format;
+	SourceLocation.PlacedFootprint.Footprint.Width = Width;
+	SourceLocation.PlacedFootprint.Footprint.Height = Height;
+	SourceLocation.PlacedFootprint.Footprint.Depth = 1;
+	SourceLocation.PlacedFootprint.Footprint.RowPitch = static_cast<UINT>(RowPitch);
+
+	m_command_list_->CopyTextureRegion(&DestinationLocation, 0, 0, 0, &SourceLocation, nullptr);
+
+	D3D12_RESOURCE_BARRIER Barrier{};
+	Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+	Barrier.Transition.pResource = GpuTexture.Get();
+	Barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+	Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+	Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+	m_command_list_->ResourceBarrier(1, &Barrier);
+
+	if (FAILED(m_command_list_->Close()))
+	{
+		return false;
+	}
+
+	ID3D12CommandList* CommandLists[] = {m_command_list_.Get()};
+	m_command_queue_->ExecuteCommandLists(1, CommandLists);
+
+	const uint64_t FenceValue = m_fence_values_[m_frame_index_] + 1;
+	if (FAILED(m_command_queue_->Signal(m_fence_.Get(), FenceValue)))
+	{
+		return false;
+	}
+	if (FAILED(m_fence_->SetEventOnCompletion(FenceValue, m_fence_event_)))
+	{
+		return false;
+	}
+	if (WaitForSingleObject(m_fence_event_, 1000) != WAIT_OBJECT_0)
+	{
+		return false;
+	}
+
+	m_fence_values_[m_frame_index_] = FenceValue + 1;
+	m_last_submitted_fence_value_ = FenceValue;
+
+	D3D12_CPU_DESCRIPTOR_HANDLE CpuSrvHandle = m_texture_srv_heap_->GetCPUDescriptorHandleForHeapStart();
+	CpuSrvHandle.ptr += static_cast<SIZE_T>(m_next_texture_srv_slot_) * m_texture_srv_descriptor_size_;
+
+	D3D12_SHADER_RESOURCE_VIEW_DESC SrvDesc{};
+	SrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	SrvDesc.Format = Format;
+	SrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+	SrvDesc.Texture2D.MipLevels = 1;
+	m_device_->CreateShaderResourceView(GpuTexture.Get(), &SrvDesc, CpuSrvHandle);
+
+	D3D12_GPU_DESCRIPTOR_HANDLE GpuSrvHandle = m_texture_srv_heap_->GetGPUDescriptorHandleForHeapStart();
+	GpuSrvHandle.ptr += static_cast<UINT64>(m_next_texture_srv_slot_) * m_texture_srv_descriptor_size_;
+
+	GpuTexture->AddRef();
+	OutResource->GpuTexture = GpuTexture.Get();
+	OutResource->GpuSrvHandle = GpuSrvHandle.ptr;
+	++m_next_texture_srv_slot_;
+	return true;
+}
+
+bool Dx12Renderer::UploadTexture2DResource(UTexture2D* InTexture, FTextureResource* OutResource)
+{
+	if (OutResource == nullptr)
+	{
+		return false;
+	}
+
+	OutResource->Reset();
+	return UploadTextureMip0(InTexture, OutResource);
 }

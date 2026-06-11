@@ -40,6 +40,7 @@ private:
 	QAction* m_all_types_action = nullptr;
 	QAction* m_static_mesh_action = nullptr;
 	QAction* m_skeletal_mesh_action = nullptr;
+	QAction* m_texture2d_action = nullptr;
 	QAction* m_other_action = nullptr;
 	bool m_b_none_mode = true;
 };

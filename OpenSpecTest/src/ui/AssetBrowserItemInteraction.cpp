@@ -1,5 +1,7 @@
 #include "ui/AssetBrowserItemInteraction.h"
 
+#include <optional>
+
 #include "asset/AssetTypeInfo.h"
 #include "ui/AssetListModel.h"
 
@@ -22,7 +24,7 @@ FAssetBrowserItemCapabilities IntersectTwoCapabilities(
 	return Result;
 }
 
-void ApplySelectionLevelCapabilityRules(FAssetBrowserGridSelectionState& InOutState)
+	void ApplySelectionLevelCapabilityRules(FAssetBrowserGridSelectionState& InOutState)
 {
 	if (InOutState.bIsMultiSelection)
 	{
@@ -34,9 +36,6 @@ void ApplySelectionLevelCapabilityRules(FAssetBrowserGridSelectionState& InOutSt
 
 	if (InOutState.bIsMixedTypeSelection)
 	{
-		InOutState.Capabilities.bCanCopy = false;
-		InOutState.Capabilities.bCanDuplicate = false;
-		InOutState.Capabilities.bCanReimport = false;
 		InOutState.Capabilities.bCanShowInExplorer = false;
 		InOutState.Capabilities.bCanCopySoftObjectPath = false;
 		InOutState.Capabilities.bCanCreateSubfolder = false;
@@ -89,7 +88,8 @@ FAssetBrowserItemCapabilities GetAssetItemCapabilities(const FAssetRegistryEntry
 	Capabilities.bCanMove = true;
 	Capabilities.bCanShowInExplorer = true;
 	Capabilities.bCanCopySoftObjectPath = true;
-	Capabilities.bCanReimport = AssetTypeInfo::IsMeshAssetType(InEntry.Type);
+	Capabilities.bCanReimport =
+		AssetTypeInfo::IsMeshAssetType(InEntry.Type) || AssetTypeInfo::IsTextureAssetType(InEntry.Type);
 	return Capabilities;
 }
 
@@ -102,6 +102,7 @@ FAssetBrowserGridSelectionState BuildGridSelectionState(
 
 	std::vector<FAssetBrowserItemCapabilities> PerItemCapabilities;
 	PerItemCapabilities.reserve(InItems.size());
+	std::optional<std::string> FirstAssetType;
 	for (const FAssetBrowserSelectedGridItem& Item : InItems)
 	{
 		if (Item.Kind == EAssetBrowserItemKind::Folder)
@@ -114,6 +115,16 @@ FAssetBrowserGridSelectionState BuildGridSelectionState(
 			++State.AssetCount;
 			if (Item.AssetListItem != nullptr)
 			{
+				const std::string& AssetType = Item.AssetListItem->Entry.Type;
+				if (FirstAssetType.has_value() && FirstAssetType.value() != AssetType)
+				{
+					State.bIsMixedAssetTypeSelection = true;
+				}
+				else if (!FirstAssetType.has_value())
+				{
+					FirstAssetType = AssetType;
+				}
+
 				PerItemCapabilities.push_back(GetAssetItemCapabilities(Item.AssetListItem->Entry));
 			}
 		}

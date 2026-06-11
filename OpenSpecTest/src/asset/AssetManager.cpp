@@ -7,6 +7,7 @@
 #include "asset/SoftObjectPath.h"
 #include "render/ResourceRegistry.h"
 #include "render/asset/StreamableRenderAsset.h"
+#include "render/asset/Texture.h"
 
 
 
@@ -45,6 +46,14 @@ UStreamableRenderAsset* UAssetManager::GetOrLoad(const std::string& InSoftObject
 		if (Existing->HasResidentGeometryData())
 		{
 			return Existing;
+		}
+
+		if (const UTexture* Texture = dynamic_cast<const UTexture*>(Existing))
+		{
+			if (Texture->HasResidentPlatformData())
+			{
+				return Existing;
+			}
 		}
 	}
 

@@ -41,12 +41,17 @@
     "Model_1/huesitos_2.huesitos_2": "Model_1/Newfff/init/huesitos_2.huesitos_2",
     "Model_1/init/huesitos_2.huesitos_2": "Model_1/Newfff/init/huesitos_2.huesitos_2",
     "Model_1/init/spider.spider": "Model_1/Newfff/init/spider.spider",
-    "Models/animation_with_skeleton_1.animation_with_skeleton_1": "Models/animation_with_skeleton_1.animation_with_skeleton_1",
-    "Models/huesitos_1.huesitos_1": "Models/huesitos_1.huesitos_1",
     "Models/huesitos_2.huesitos_2": "Model_1/Newfff/init/huesitos_2.huesitos_2",
     "Models/init/huesitos.huesitos": "Model_1/Newfff/init/huesitos_2.huesitos_2",
     "Models/init/spider.spider": "Model_1/Newfff/init/spider.spider",
-    "Models/spider.spider": "Model_1/Newfff/init/spider.spider"
+    "Models/map_01.map_01": "Texture/map_01.map_01",
+    "Models/map_01_1.map_01_1": "Texture/map_01_1.map_01_1",
+    "Models/spider.spider": "Model_1/Newfff/init/spider.spider",
+    "Texture/Test/map_0322.map_0322": "Textures/Test/map_0322.map_0322",
+    "Texture/map_03.map_03": "Textures/map_03.map_03",
+    "Textures/Test/map_03.map_03": "Textures/Test/map_0322.map_0322",
+    "template_caves_1.template_caves_1": "template_caves_222.template_caves_222",
+    "template_caves_limit_connectivity.template_caves_limit_connectivity": "template_caves.template_caves"
   },
   "version": 1
 }

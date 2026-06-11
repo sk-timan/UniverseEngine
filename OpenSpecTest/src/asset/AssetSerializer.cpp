@@ -11,6 +11,7 @@
 #include "render/asset/SkeletalMesh.h"
 #include "render/asset/StaticMesh.h"
 #include "render/asset/StreamableRenderAsset.h"
+#include "render/asset/Texture2D.h"
 
 namespace
 {
@@ -57,12 +58,12 @@ bool ReadTextFile(const std::filesystem::path& InPath, std::string* OutText, std
 	return true;
 }
 
-// Binary .uasset container: [magic(4)][version(u32)][headerJsonLen(u32)][headerJson]
-// [payloadFormat(u8): 0=JSON text, 1=StaticMesh binary][payload].
+// [payloadFormat(u8): 0=JSON text, 1=StaticMesh binary, 2=Texture2D binary][payload].
 constexpr char kBinaryMagic[4] = {'U', 'A', 'S', 'T'};
 constexpr uint32_t kBinaryVersion = 1;
 constexpr uint8_t kPayloadJsonText = 0;
 constexpr uint8_t kPayloadStaticMeshBinary = 1;
+constexpr uint8_t kPayloadTexture2DBinary = 2;
 
 void AppendU32(std::string* OutBuffer, uint32_t InValue)
 {
@@ -314,6 +315,11 @@ bool UAssetSerializer::Save(
 		Buffer.push_back(static_cast<char>(kPayloadStaticMeshBinary));
 		WriteStaticMeshBinary(*StaticMesh, InHeader.ObjectName, InHeader.AssetPath, &Buffer);
 	}
+	else if (const UTexture2D* Texture2D = dynamic_cast<const UTexture2D*>(&InAsset))
+	{
+		Buffer.push_back(static_cast<char>(kPayloadTexture2DBinary));
+		const_cast<UTexture2D*>(Texture2D)->WriteBinaryPayload(&Buffer);
+	}
 	else
 	{
 		nlohmann::json ObjectJson;
@@ -429,6 +435,16 @@ UStreamableRenderAsset* UAssetSerializer::LoadObject(
 			{
 				return ReadStaticMeshBinary(&Reader, OutErrorMessage);
 			}
+			if (PayloadFormat == kPayloadTexture2DBinary)
+			{
+				FBinaryTextureReader TextureReader{};
+				TextureReader.Data = Reader.Data;
+				TextureReader.Size = Reader.Size;
+				TextureReader.Cursor = Reader.Cursor;
+				UTexture2D* Texture2D = UTexture2D::DeserializeBinary(&TextureReader, OutErrorMessage);
+				Reader.Cursor = TextureReader.Cursor;
+				return Texture2D;
+			}
 
 			std::string ObjectText;
 			if (!Reader.ReadLengthPrefixed(&ObjectText))
@@ -447,6 +463,10 @@ UStreamableRenderAsset* UAssetSerializer::LoadObject(
 			if (Header.Type == "StaticMesh")
 			{
 				return UStaticMesh::Deserialize(ObjectJson, OutErrorMessage);
+			}
+			if (Header.Type == "Texture2D")
+			{
+				return UTexture2D::Deserialize(ObjectJson, OutErrorMessage);
 			}
 			if (OutErrorMessage != nullptr)
 			{
@@ -482,6 +502,10 @@ UStreamableRenderAsset* UAssetSerializer::LoadObject(
 		if (Header.Type == "SkeletalMesh")
 		{
 			return USkeletalMesh::Deserialize(ObjectJson, OutErrorMessage);
+		}
+		if (Header.Type == "Texture2D")
+		{
+			return UTexture2D::Deserialize(ObjectJson, OutErrorMessage);
 		}
 
 		if (OutErrorMessage != nullptr)

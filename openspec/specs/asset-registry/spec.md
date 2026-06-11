@@ -49,6 +49,21 @@
 - **当** 调用 ListAssets 并过滤 type=`StaticMesh`
 - **那么** 系统必须仅返回 StaticMesh 类型 uasset 的路径列表
 
+#### 场景:按类型列出纹理
+
+- **当** 调用 ListAssets 并过滤 type=`Texture2D`
+- **那么** 系统必须仅返回 Texture2D 类型 uasset 的路径列表
+
+#### 场景:Texture 条目 Source 信息
+
+- **当** Registry 索引 Texture2D uasset
+- **那么** 条目必须可读 meta.source_file 供 Reimport 与 Content Browser 展示
+
+#### 场景:depends_on 预留 Material 引用
+
+- **当** Texture uasset header 含 depends_on
+- **那么** Registry 必须原样暴露 depends_on 列表（可为空）
+
 #### 场景:查询 SourceReference
 
 - **当** 查询 `Meshes/Characters/Soldier` 的 Registry 条目

@@ -87,3 +87,13 @@ uasset 不得包含 GPU VB/IB 句柄；Load 后由渲染层在需要绘制时 Up
 - **当** AssetManager 完成 uasset Load
 - **那么** Section 的 VertexBufferGPU/IndexBufferGPU 可为 null
 - **那么** Component CreateRenderState 或等效路径必须负责 Upload
+
+### 需求:AssetManager Load 必须支持 Texture2D 类型路由
+
+`UAssetSerializer::LoadObject` 必须根据 header.type 反序列化 `UTexture2D`，并纳入 AssetManager 缓存。
+
+#### 场景:按 type 反序列化 Texture2D
+
+- **当** uasset header.type 为 `Texture2D`
+- **那么** LoadObject 必须返回 `UTexture2D` 实例
+- **那么** 禁止以 StaticMesh 或 JSON fallback 解析 Texture payload

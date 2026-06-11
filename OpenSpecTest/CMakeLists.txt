@@ -45,6 +45,25 @@ target_include_directories(openspec_nlohmann_json INTERFACE
   "${OPEN_SPEC_TEST_NLOHMANN_JSON_ROOT}"
 )
 
+# stb (header-only) integration from thirdparty/stb.
+set(OPEN_SPEC_TEST_STB_ROOT
+  "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/stb"
+)
+set(OPEN_SPEC_TEST_STB_IMAGE_HEADER
+  "${OPEN_SPEC_TEST_STB_ROOT}/stb_image.h"
+)
+if (NOT EXISTS "${OPEN_SPEC_TEST_STB_IMAGE_HEADER}")
+  message(FATAL_ERROR
+    "stb_image.h not found at ${OPEN_SPEC_TEST_STB_IMAGE_HEADER}"
+  )
+endif()
+
+add_library(openspec_stb INTERFACE)
+add_library(stb::stb ALIAS openspec_stb)
+target_include_directories(openspec_stb INTERFACE
+  "${OPEN_SPEC_TEST_STB_ROOT}"
+)
+
 # Use Qt deployment tool so runtime DLLs/plugins are available next to the exe.
 find_program(OPEN_SPEC_TEST_WINDEPLOYQT_EXECUTABLE
   NAMES windeployqt
@@ -89,6 +108,7 @@ target_link_libraries(OpenSpecTest PRIVATE
   dxguid
   d3dcompiler
   nlohmann_json::nlohmann_json
+  stb::stb
   ${OPEN_SPEC_TEST_QT_TARGET}
 )
 
@@ -464,6 +484,7 @@ add_executable(OpenSpecTest_AssetSerializerTests
   "src/asset/AssetPackageHeader.cpp"
   "src/asset/AssetSerializer.cpp"
   "src/asset/ProjectPaths.cpp"
+  "src/asset/SoftObjectPath.cpp"
   "src/render/asset/StreamableRenderAsset.cpp"
   "src/render/asset/StaticMesh.cpp"
   "src/render/asset/SkinnedAsset.cpp"
@@ -487,5 +508,48 @@ target_link_libraries(OpenSpecTest_AssetSerializerTests PRIVATE
 set_property(TARGET OpenSpecTest_AssetSerializerTests PROPERTY CXX_STANDARD 20)
 
 add_test(NAME OpenSpecTest_AssetSerializerTests COMMAND OpenSpecTest_AssetSerializerTests)
+
+add_executable(OpenSpecTest_TextureSerializerTests
+  "src/tests/TextureSerializerTests.cpp"
+  "src/tests/Dx12RendererTestStub.cpp"
+  "src/core/UClass.cpp"
+  "src/core/UObject.cpp"
+  "src/asset/AssetPackageHeader.cpp"
+  "src/asset/AssetSerializer.cpp"
+  "src/asset/AssetManager.cpp"
+  "src/asset/AssetRegistry.cpp"
+  "src/asset/AssetReferenceResolver.cpp"
+  "src/asset/AssetRedirectStore.cpp"
+  "src/asset/ProjectPaths.cpp"
+  "src/asset/SoftObjectPath.cpp"
+  "src/render/ResourceRegistry.cpp"
+  "src/render/asset/StreamableRenderAsset.cpp"
+  "src/render/asset/StaticMesh.cpp"
+  "src/render/asset/SkinnedAsset.cpp"
+  "src/render/asset/SkeletalMesh.cpp"
+  "src/render/asset/Texture.cpp"
+  "src/render/asset/Texture2D.cpp"
+  "src/render/asset/TextureResource.cpp"
+  "src/math/FVector2D.cpp"
+  "src/math/FVector3.cpp"
+  "src/math/FVector4.cpp"
+  "src/math/FRotator3.cpp"
+  "src/math/FTransform.cpp"
+)
+
+target_include_directories(OpenSpecTest_TextureSerializerTests PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/src"
+  "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty"
+)
+
+target_link_libraries(OpenSpecTest_TextureSerializerTests PRIVATE
+  nlohmann_json::nlohmann_json
+  d3d12
+  dxguid
+)
+
+set_property(TARGET OpenSpecTest_TextureSerializerTests PROPERTY CXX_STANDARD 20)
+
+add_test(NAME OpenSpecTest_TextureSerializerTests COMMAND OpenSpecTest_TextureSerializerTests)
 
 # TODO: 如有需要，请添加测试并安装目标。
