@@ -11,9 +11,14 @@ endif()
 
 project ("OpenSpecTest")
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 if (MSVC)
   add_compile_options(/utf-8)
 endif()
 
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+
 # 包含子项目。
+add_subdirectory ("Tools/ReflectionGenerator")
 add_subdirectory ("OpenSpecTest")

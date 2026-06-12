@@ -2504,6 +2504,7 @@ void GameApp::TickEditorInteraction(float DeltaSeconds)
 			{
 				FEditorActorTransform::SetEditableTransform(SelectedActor, DragTransform);
 				ApplyMultiSelectFollowersFromPrimary(SelectedActor);
+				BumpSceneRevision();
 			}
 		}
 	}

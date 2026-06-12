@@ -83,18 +83,52 @@ file(GLOB_RECURSE OPEN_SPEC_TEST_SRC_FILES CONFIGURE_DEPENDS
 )
 list(FILTER OPEN_SPEC_TEST_SRC_FILES EXCLUDE REGEX ".*/src/tests/.*\\.cpp$")
 
+file(GLOB OPEN_SPEC_TEST_REFLECTION_GEN_SOURCES CONFIGURE_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/Generated/Reflection/*.gen.cpp"
+)
+
+set(OPEN_SPEC_TEST_REFLECTION_GENERATED_DIR
+  "${CMAKE_CURRENT_SOURCE_DIR}/Generated/Reflection"
+)
+
 # 将源代码添加到此项目的可执行文件。
 add_executable (OpenSpecTest WIN32
   "OpenSpecTest.cpp"
   "OpenSpecTest.h"
   ${OPEN_SPEC_TEST_SRC_FILES}
+  ${OPEN_SPEC_TEST_REFLECTION_GEN_SOURCES}
   ${OPEN_SPEC_TEST_SHADER_FILES}
 )
 
 target_include_directories(OpenSpecTest PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/src"
   "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty"
+  "${OPEN_SPEC_TEST_REFLECTION_GENERATED_DIR}"
 )
+
+if (TARGET ReflectionGenerator)
+  set(OPEN_SPEC_TEST_COMPILE_COMMANDS "${CMAKE_BINARY_DIR}/compile_commands.json")
+  if (EXISTS "${OPEN_SPEC_TEST_COMPILE_COMMANDS}")
+    set(OPEN_SPEC_TEST_REFLECTION_STAMP "${OPEN_SPEC_TEST_REFLECTION_GENERATED_DIR}/_reflection.stamp")
+    add_custom_command(
+      OUTPUT "${OPEN_SPEC_TEST_REFLECTION_STAMP}"
+      COMMAND ReflectionGenerator
+        --compile-commands "${OPEN_SPEC_TEST_COMPILE_COMMANDS}"
+        --scan-dir "${CMAKE_CURRENT_SOURCE_DIR}/src"
+        --output-dir "${OPEN_SPEC_TEST_REFLECTION_GENERATED_DIR}"
+        --module OpenSpecTest
+      COMMAND ${CMAKE_COMMAND} -E touch "${OPEN_SPEC_TEST_REFLECTION_STAMP}"
+      DEPENDS ReflectionGenerator
+      WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+      COMMENT "Generating reflection registration code"
+      VERBATIM
+    )
+    add_custom_target(OpenSpecTest_ReflectionCodegen DEPENDS "${OPEN_SPEC_TEST_REFLECTION_STAMP}")
+    add_dependencies(OpenSpecTest OpenSpecTest_ReflectionCodegen)
+  else()
+    message(STATUS "compile_commands.json not found; using checked-in Generated/Reflection outputs.")
+  endif()
+endif()
 
 if (OPEN_SPEC_TEST_SHADER_FILES)
   source_group("Shader Files" FILES ${OPEN_SPEC_TEST_SHADER_FILES})
@@ -124,6 +158,10 @@ if (EXISTS "${OPEN_SPEC_TEST_THIRDPARTY_ROOT}" AND IS_DIRECTORY "${OPEN_SPEC_TES
   )
 
   foreach(thirdparty_item IN LISTS OPEN_SPEC_TEST_THIRDPARTY_ITEMS)
+    if (thirdparty_item STREQUAL "libclang")
+      continue()
+    endif()
+
     set(thirdparty_item_dir "${OPEN_SPEC_TEST_THIRDPARTY_ROOT}/${thirdparty_item}")
     if (NOT IS_DIRECTORY "${thirdparty_item_dir}")
       continue()
@@ -329,6 +367,43 @@ target_link_libraries(OpenSpecTest_ComponentSystemTests PRIVATE
 set_property(TARGET OpenSpecTest_ComponentSystemTests PROPERTY CXX_STANDARD 20)
 
 add_test(NAME OpenSpecTest_ComponentSystemTests COMMAND OpenSpecTest_ComponentSystemTests)
+
+add_executable(OpenSpecTest_ReflectionRuntimeTests
+  "src/tests/ReflectionRuntimeTests.cpp"
+  "Generated/Reflection/USceneComponent.gen.cpp"
+  "src/core/UClass.cpp"
+  "src/core/UObject.cpp"
+  "src/core/ObjectRegistry.cpp"
+  "src/components/ActorComponent.cpp"
+  "src/components/SceneComponent.cpp"
+  "src/world/Actor.cpp"
+  "src/reflection/Field.cpp"
+  "src/reflection/Property.cpp"
+  "src/reflection/ScriptStruct.cpp"
+  "src/reflection/Enum.cpp"
+  "src/reflection/Function.cpp"
+  "src/reflection/ReflectionRegistry.cpp"
+  "src/reflection/GeneratedRegistration.cpp"
+  "src/math/FVector3.cpp"
+  "src/math/FVector2D.cpp"
+  "src/math/FVector4.cpp"
+  "src/math/FRotator3.cpp"
+  "src/math/FTransform.cpp"
+)
+
+target_include_directories(OpenSpecTest_ReflectionRuntimeTests PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/src"
+  "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty"
+  "${OPEN_SPEC_TEST_REFLECTION_GENERATED_DIR}"
+)
+
+target_link_libraries(OpenSpecTest_ReflectionRuntimeTests PRIVATE
+  nlohmann_json::nlohmann_json
+)
+
+set_property(TARGET OpenSpecTest_ReflectionRuntimeTests PROPERTY CXX_STANDARD 20)
+
+add_test(NAME OpenSpecTest_ReflectionRuntimeTests COMMAND OpenSpecTest_ReflectionRuntimeTests)
 
 add_executable(OpenSpecTest_WorldLifecycleTests
   "src/tests/WorldLifecycleTests.cpp"

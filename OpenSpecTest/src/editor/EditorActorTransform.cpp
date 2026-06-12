@@ -68,6 +68,12 @@ FActorTransform FEditorActorTransform::GetEditableTransform(const AActor* InActo
 		}
 	}
 
+	USceneComponent* RootComponent = InActor->GetRootComponent();
+	if (RootComponent != nullptr)
+	{
+		return FActorTransform::FromSceneTransform(RootComponent->GetRelativeTransform());
+	}
+
 	return InActor->GetActorTransform();
 }
 

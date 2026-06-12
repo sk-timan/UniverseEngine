@@ -35,7 +35,6 @@ bool IsIdentityRelativeTransform(const FTransform& InTransform)
 		IsNearlyZero(Rotation.Pitch) && IsNearlyZero(Rotation.Yaw) && IsNearlyZero(Rotation.Roll) &&
 		IsNearlyOne(Scale.X) && IsNearlyOne(Scale.Y) && IsNearlyOne(Scale.Z);
 }
-
 } // namespace
 
 USceneComponent::USceneComponent(uint64_t InObjectId, std::string InObjectName, const UClass* InClass)
@@ -49,52 +48,68 @@ const UClass& USceneComponent::StaticClass()
 	return Class;
 }
 
+void USceneComponent::RebuildRelativeTransformCache() const
+{
+	CachedRelativeTransform_ = FTransform(RelativeLocation_, RelativeRotation_, RelativeScale_);
+	bRelativeTransformCacheDirty_ = false;
+}
+
 void USceneComponent::SetRelativeTransform(const FTransform& InTransform)
 {
-	RelativeTransform_ = InTransform;
+	RelativeLocation_ = InTransform.GetLocation();
+	RelativeRotation_ = InTransform.GetRotation();
+	RelativeScale_ = InTransform.GetScale();
+	bRelativeTransformCacheDirty_ = true;
 	MarkTransformDirty();
 	OnUpdateTransform();
 }
 
 const FTransform& USceneComponent::GetRelativeTransform() const
 {
-	return RelativeTransform_;
+	if (bRelativeTransformCacheDirty_)
+	{
+		RebuildRelativeTransformCache();
+	}
+	return CachedRelativeTransform_;
 }
 
 void USceneComponent::SetRelativeLocation(const FVector3& InLocation)
 {
-	RelativeTransform_.SetLocation(InLocation);
+	RelativeLocation_ = InLocation;
+	bRelativeTransformCacheDirty_ = true;
 	MarkTransformDirty();
 	OnUpdateTransform();
 }
 
 const FVector3& USceneComponent::GetRelativeLocation() const
 {
-	return RelativeTransform_.GetLocation();
+	return RelativeLocation_;
 }
 
 void USceneComponent::SetRelativeRotation(const FRotator3& InRotation)
 {
-	RelativeTransform_.SetRotation(InRotation);
+	RelativeRotation_ = InRotation;
+	bRelativeTransformCacheDirty_ = true;
 	MarkTransformDirty();
 	OnUpdateTransform();
 }
 
 FRotator3 USceneComponent::GetRelativeRotation() const
 {
-	return RelativeTransform_.GetRotation();
+	return RelativeRotation_;
 }
 
 void USceneComponent::SetRelativeScale3D(const FVector3& InScale)
 {
-	RelativeTransform_.SetScale(InScale);
+	RelativeScale_ = InScale;
+	bRelativeTransformCacheDirty_ = true;
 	MarkTransformDirty();
 	OnUpdateTransform();
 }
 
 const FVector3& USceneComponent::GetRelativeScale3D() const
 {
-	return RelativeTransform_.GetScale();
+	return RelativeScale_;
 }
 
 FTransform USceneComponent::GetWorldTransform() const
@@ -173,9 +188,17 @@ void USceneComponent::MarkTransformDirty()
 	}
 }
 
+void USceneComponent::NotifyRelativeTransformEdited()
+{
+	bRelativeTransformCacheDirty_ = true;
+	MarkTransformDirty();
+	OnUpdateTransform();
+}
+
 void USceneComponent::UpdateWorldTransform() const
 {
-	if (IsIdentityRelativeTransform(RelativeTransform_))
+	const FTransform& RelativeTransform = GetRelativeTransform();
+	if (IsIdentityRelativeTransform(RelativeTransform))
 	{
 		if (AttachParent_ != nullptr)
 		{
@@ -187,22 +210,21 @@ void USceneComponent::UpdateWorldTransform() const
 		}
 		else
 		{
-			CachedWorldTransform_ = RelativeTransform_;
+			CachedWorldTransform_ = RelativeTransform;
 		}
 	}
 	else if (AttachParent_ != nullptr)
 	{
-		CachedWorldTransform_ =
-			FTransform::Combine(AttachParent_->GetWorldTransform(), RelativeTransform_);
+		CachedWorldTransform_ = FTransform::Combine(AttachParent_->GetWorldTransform(), RelativeTransform);
 	}
 	else if (AActor* Owner = GetOwnerActor())
 	{
 		CachedWorldTransform_ =
-			FTransform::Combine(Owner->GetActorTransform().ToSceneTransform(), RelativeTransform_);
+			FTransform::Combine(Owner->GetActorTransform().ToSceneTransform(), RelativeTransform);
 	}
 	else
 	{
-		CachedWorldTransform_ = RelativeTransform_;
+		CachedWorldTransform_ = RelativeTransform;
 	}
 	bWorldTransformDirty_ = false;
 }

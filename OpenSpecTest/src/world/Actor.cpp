@@ -43,7 +43,15 @@ const FActorTransform& AActor::GetActorTransform() const
 
 void AActor::SetActorTransform(const FActorTransform& InTransform)
 {
-	ActorTransform_ = InTransform;
+	if (RootComponent_ != nullptr)
+	{
+		RootComponent_->SetRelativeTransform(InTransform.ToSceneTransform());
+		ActorTransform_ = FActorTransform::Identity();
+	}
+	else
+	{
+		ActorTransform_ = InTransform;
+	}
 	ApplyActorTransformToRoot();
 }
 

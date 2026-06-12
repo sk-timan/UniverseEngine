@@ -1,6 +1,10 @@
 #include "core/UClass.h"
 #include "core/UObject.h"
 
+#include "reflection/Function.h"
+#include "reflection/Property.h"
+#include "reflection/ReflectionRegistry.h"
+
 #include <utility>
 
 UClass::UClass(std::string InClassName, const UClass* InParentClass, FCreateObjectFn InCreateObjectFn)
@@ -18,6 +22,26 @@ const std::string& UClass::GetTypeName() const
 const UClass* UClass::GetParentClass() const
 {
 	return ParentClass_;
+}
+
+const UClass* UClass::GetSuperClass() const
+{
+	return GetParentClass();
+}
+
+const FProperty* UClass::FindPropertyByName(const std::string& InPropertyName) const
+{
+	return FReflectionRegistry::Get().FindPropertyByName(this, InPropertyName);
+}
+
+void UClass::ForEachProperty(const std::function<void(const FProperty&)>& InCallback) const
+{
+	FReflectionRegistry::Get().ForEachProperty(this, InCallback);
+}
+
+const UFunction* UClass::FindFunctionByName(const std::string& InFunctionName) const
+{
+	return FReflectionRegistry::Get().FindFunctionByName(this, InFunctionName);
 }
 
 bool UClass::IsChildOf(const UClass* InParentClass) const

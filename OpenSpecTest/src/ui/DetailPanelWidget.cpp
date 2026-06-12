@@ -1,8 +1,6 @@
 #include "ui/DetailPanelWidget.h"
 
 #include <QCheckBox>
-#include <QFormLayout>
-#include <QGroupBox>
 #include <QLabel>
 #include <QLineEdit>
 #include <QSizePolicy>
@@ -11,7 +9,8 @@
 #include <algorithm>
 
 #include "app/GameApp.h"
-#include "ui/DraggableDoubleSpinBox.h"
+#include "components/SceneComponent.h"
+#include "ui/PropertyDetailsBuilder.h"
 #include "world/Actor.h"
 
 DetailPanelWidget::DetailPanelWidget(GameApp* InGameApp, QWidget* InParent)
@@ -39,31 +38,10 @@ void DetailPanelWidget::BuildUi()
 	m_search_edit_->setClearButtonEnabled(true);
 	ContentLayout->addWidget(m_search_edit_);
 
-	m_transform_group_ = new QGroupBox(tr("Transform"), Content);
-	auto* TransformLayout = new QFormLayout(m_transform_group_);
-
-	m_position_x_spin_ = CreateSpinBox(-100000.0, 100000.0, 0.0);
-	m_position_y_spin_ = CreateSpinBox(-100000.0, 100000.0, 0.0);
-	m_position_z_spin_ = CreateSpinBox(-100000.0, 100000.0, 0.0);
-	TransformLayout->addRow(tr("Location X"), m_position_x_spin_);
-	TransformLayout->addRow(tr("Location Y"), m_position_y_spin_);
-	TransformLayout->addRow(tr("Location Z"), m_position_z_spin_);
-
-	m_rotation_pitch_spin_ = CreateSpinBox(-360.0, 360.0, 0.0);
-	m_rotation_yaw_spin_ = CreateSpinBox(-360.0, 360.0, 0.0);
-	m_rotation_roll_spin_ = CreateSpinBox(-360.0, 360.0, 0.0);
-	TransformLayout->addRow(tr("Rotation Pitch"), m_rotation_pitch_spin_);
-	TransformLayout->addRow(tr("Rotation Yaw"), m_rotation_yaw_spin_);
-	TransformLayout->addRow(tr("Rotation Roll"), m_rotation_roll_spin_);
-
-	m_scale_x_spin_ = CreateSpinBox(0.001, 1000.0, 1.0);
-	m_scale_y_spin_ = CreateSpinBox(0.001, 1000.0, 1.0);
-	m_scale_z_spin_ = CreateSpinBox(0.001, 1000.0, 1.0);
-	TransformLayout->addRow(tr("Scale X"), m_scale_x_spin_);
-	TransformLayout->addRow(tr("Scale Y"), m_scale_y_spin_);
-	TransformLayout->addRow(tr("Scale Z"), m_scale_z_spin_);
-
-	ContentLayout->addWidget(m_transform_group_);
+	m_reflection_properties_host_ = new QWidget(Content);
+	m_reflection_properties_layout_ = new QVBoxLayout(m_reflection_properties_host_);
+	m_reflection_properties_layout_->setContentsMargins(0, 0, 0, 0);
+	ContentLayout->addWidget(m_reflection_properties_host_);
 
 	m_aabb_debug_checkbox_ = new QCheckBox(tr("显示 Mesh Actor AABB 线框"), Content);
 	m_aabb_debug_checkbox_->setEnabled(false);
@@ -77,25 +55,6 @@ void DetailPanelWidget::BuildUi()
 		new QCheckBox(tr("显示 Mesh Actor SectionBounds 线框"), Content);
 	m_section_bounds_debug_checkbox_->setEnabled(false);
 	ContentLayout->addWidget(m_section_bounds_debug_checkbox_);
-
-	const auto ConnectSpin = [this](DraggableDoubleSpinBox* InSpin)
-	{
-		if (InSpin == nullptr)
-		{
-			return;
-		}
-		connect(InSpin, &DraggableDoubleSpinBox::valueChanged, this, &DetailPanelWidget::OnTransformFieldChanged);
-		connect(InSpin, &DraggableDoubleSpinBox::editingFinished, this, &DetailPanelWidget::OnTransformEditingFinished);
-	};
-	ConnectSpin(m_position_x_spin_);
-	ConnectSpin(m_position_y_spin_);
-	ConnectSpin(m_position_z_spin_);
-	ConnectSpin(m_rotation_pitch_spin_);
-	ConnectSpin(m_rotation_yaw_spin_);
-	ConnectSpin(m_rotation_roll_spin_);
-	ConnectSpin(m_scale_x_spin_);
-	ConnectSpin(m_scale_y_spin_);
-	ConnectSpin(m_scale_z_spin_);
 
 	connect(m_search_edit_, &QLineEdit::textChanged, this, &DetailPanelWidget::OnSearchTextChanged);
 	connect(m_aabb_debug_checkbox_, &QCheckBox::toggled, this, &DetailPanelWidget::OnAabbDebugToggled);
@@ -136,17 +95,44 @@ void DetailPanelWidget::UpdateHeaderLabelLayoutWidth()
 	m_header_label_->setMinimumWidth(0);
 }
 
-DraggableDoubleSpinBox* DetailPanelWidget::CreateSpinBox(double InMin, double InMax, double InValue, int InDecimals)
+void DetailPanelWidget::RebuildReflectionProperties()
 {
-	auto* SpinBox = new DraggableDoubleSpinBox(m_transform_group_);
-	SpinBox->setRange(InMin, InMax);
-	SpinBox->setDecimals(InDecimals);
-	SpinBox->setValue(InValue);
-	SpinBox->setSingleStep(0.1);
-	SpinBox->SetDragSensitivity(1.0);
-	SpinBox->setKeyboardTracking(false);
-	SpinBox->setEnabled(false);
-	return SpinBox;
+	if (m_reflection_properties_layout_ == nullptr || m_game_app_ == nullptr)
+	{
+		return;
+	}
+
+	while (QLayoutItem* Item = m_reflection_properties_layout_->takeAt(0))
+	{
+		if (QWidget* Widget = Item->widget())
+		{
+			Widget->deleteLater();
+		}
+		delete Item;
+	}
+
+	const AActor* SelectedActor = m_game_app_->GetSelectedActor();
+	if (SelectedActor == nullptr)
+	{
+		return;
+	}
+
+	USceneComponent* RootComponent = SelectedActor->GetRootComponent();
+	if (RootComponent == nullptr)
+	{
+		return;
+	}
+
+	const std::string SearchText = m_search_edit_ != nullptr ? m_search_edit_->text().toStdString() : std::string{};
+	QWidget* PropertiesWidget = PropertyDetailsBuilder::BuildPropertiesWidget(
+		RootComponent,
+		m_reflection_properties_host_,
+		SearchText,
+		[this]() { OnReflectionPropertyChanged(); });
+	if (PropertiesWidget != nullptr)
+	{
+		m_reflection_properties_layout_->addWidget(PropertiesWidget);
+	}
 }
 
 void DetailPanelWidget::RefreshFromSelection()
@@ -173,13 +159,8 @@ void DetailPanelWidget::RefreshFromSelection()
 		m_aabb_debug_checkbox_->setEnabled(bHasSelection);
 		if (!bHasSelection)
 		{
-			m_is_syncing_controls_ = true;
 			m_aabb_debug_checkbox_->setChecked(false);
-			m_is_syncing_controls_ = false;
-			if (m_game_app_ != nullptr)
-			{
-				m_game_app_->SetSelectedActorAabbDebugEnabled(false);
-			}
+			m_game_app_->SetSelectedActorAabbDebugEnabled(false);
 		}
 		else
 		{
@@ -191,13 +172,8 @@ void DetailPanelWidget::RefreshFromSelection()
 		m_obb_debug_checkbox_->setEnabled(bHasSelection);
 		if (!bHasSelection)
 		{
-			m_is_syncing_controls_ = true;
 			m_obb_debug_checkbox_->setChecked(false);
-			m_is_syncing_controls_ = false;
-			if (m_game_app_ != nullptr)
-			{
-				m_game_app_->SetSelectedActorObbDebugEnabled(false);
-			}
+			m_game_app_->SetSelectedActorObbDebugEnabled(false);
 		}
 		else
 		{
@@ -209,13 +185,8 @@ void DetailPanelWidget::RefreshFromSelection()
 		m_section_bounds_debug_checkbox_->setEnabled(bHasSelection);
 		if (!bHasSelection)
 		{
-			m_is_syncing_controls_ = true;
 			m_section_bounds_debug_checkbox_->setChecked(false);
-			m_is_syncing_controls_ = false;
-			if (m_game_app_ != nullptr)
-			{
-				m_game_app_->SetSelectedActorSectionBoundsDebugEnabled(false);
-			}
+			m_game_app_->SetSelectedActorSectionBoundsDebugEnabled(false);
 		}
 		else
 		{
@@ -223,22 +194,11 @@ void DetailPanelWidget::RefreshFromSelection()
 		}
 	}
 
-	for (DraggableDoubleSpinBox* Spin :
-		{m_position_x_spin_, m_position_y_spin_, m_position_z_spin_, m_rotation_pitch_spin_,
-			m_rotation_yaw_spin_, m_rotation_roll_spin_, m_scale_x_spin_, m_scale_y_spin_,
-			m_scale_z_spin_})
-	{
-		if (Spin != nullptr)
-		{
-			Spin->setEnabled(bHasSelection);
-		}
-	}
-
 	if (!bHasSelection)
 	{
 		m_header_label_->setText(tr("未选中 Actor"));
 		UpdateHeaderLabelLayoutWidth();
-		PopulateFromActorTransform(FActorTransform::Identity());
+		RebuildReflectionProperties();
 		return;
 	}
 
@@ -248,112 +208,42 @@ void DetailPanelWidget::RefreshFromSelection()
 			.arg(QString::fromStdString(SelectedActor->GetClass().GetTypeName()));
 	m_header_label_->setText(HeaderText);
 	UpdateHeaderLabelLayoutWidth();
+	RebuildReflectionProperties();
 	RefreshScrollContentGeometry();
-	PopulateFromActorTransform(m_game_app_->GetSelectedActorEditableTransform());
-}
-
-void DetailPanelWidget::PopulateFromActorTransform(const FActorTransform& InTransform)
-{
-	m_is_syncing_controls_ = true;
-	if (m_position_x_spin_ != nullptr)
-	{
-		m_position_x_spin_->setValue(InTransform.Position.X);
-		m_position_y_spin_->setValue(InTransform.Position.Y);
-		m_position_z_spin_->setValue(InTransform.Position.Z);
-	}
-	if (m_rotation_pitch_spin_ != nullptr)
-	{
-		m_rotation_pitch_spin_->setValue(InTransform.Rotation.Pitch);
-		m_rotation_yaw_spin_->setValue(InTransform.Rotation.Yaw);
-		m_rotation_roll_spin_->setValue(InTransform.Rotation.Roll);
-	}
-	if (m_scale_x_spin_ != nullptr)
-	{
-		m_scale_x_spin_->setValue(InTransform.Scale.X);
-		m_scale_y_spin_->setValue(InTransform.Scale.Y);
-		m_scale_z_spin_->setValue(InTransform.Scale.Z);
-	}
-	m_is_syncing_controls_ = false;
-}
-
-FActorTransform DetailPanelWidget::BuildTransformFromControls() const
-{
-	FActorTransform Result;
-	if (m_position_x_spin_ != nullptr)
-	{
-		Result.Position.X = static_cast<float>(m_position_x_spin_->value());
-		Result.Position.Y = static_cast<float>(m_position_y_spin_->value());
-		Result.Position.Z = static_cast<float>(m_position_z_spin_->value());
-	}
-	if (m_rotation_pitch_spin_ != nullptr)
-	{
-		Result.Rotation.Pitch = static_cast<float>(m_rotation_pitch_spin_->value());
-		Result.Rotation.Yaw = static_cast<float>(m_rotation_yaw_spin_->value());
-		Result.Rotation.Roll = static_cast<float>(m_rotation_roll_spin_->value());
-	}
-	if (m_scale_x_spin_ != nullptr)
-	{
-		Result.Scale.X = static_cast<float>(m_scale_x_spin_->value());
-		Result.Scale.Y = static_cast<float>(m_scale_y_spin_->value());
-		Result.Scale.Z = static_cast<float>(m_scale_z_spin_->value());
-	}
-	return Result;
-}
-
-void DetailPanelWidget::CommitTransformFromControls()
-{
-	if (m_is_syncing_controls_ || m_game_app_ == nullptr)
-	{
-		return;
-	}
-
-	if (m_game_app_->GetSelectedActorObjectId() == 0)
-	{
-		return;
-	}
-
-	m_game_app_->SetSelectedActorTransform(BuildTransformFromControls(), true);
-}
-
-void DetailPanelWidget::OnTransformFieldChanged(double InValue)
-{
-	(void)InValue;
-	CommitTransformFromControls();
-}
-
-void DetailPanelWidget::OnTransformEditingFinished()
-{
-	CommitTransformFromControls();
 }
 
 void DetailPanelWidget::OnSearchTextChanged(const QString& InText)
 {
-	if (m_transform_group_ == nullptr)
+	(void)InText;
+	RebuildReflectionProperties();
+}
+
+void DetailPanelWidget::OnReflectionPropertyChanged()
+{
+	if (m_game_app_ == nullptr)
 	{
 		return;
 	}
 
-	const QString FilterText = InText.trimmed();
-	if (FilterText.isEmpty())
+	if (AActor* SelectedActor = m_game_app_->GetSelectedActor())
 	{
-		m_transform_group_->setVisible(true);
-		return;
+		if (USceneComponent* RootComponent = SelectedActor->GetRootComponent())
+		{
+			RootComponent->NotifyRelativeTransformEdited();
+		}
 	}
 
-	const bool bShowTransform =
-		tr("Transform").contains(FilterText, Qt::CaseInsensitive)
-		|| tr("Location").contains(FilterText, Qt::CaseInsensitive)
-		|| tr("Rotation").contains(FilterText, Qt::CaseInsensitive)
-		|| tr("Scale").contains(FilterText, Qt::CaseInsensitive)
-		|| QStringLiteral("X").contains(FilterText, Qt::CaseInsensitive)
-		|| QStringLiteral("Y").contains(FilterText, Qt::CaseInsensitive)
-		|| QStringLiteral("Z").contains(FilterText, Qt::CaseInsensitive);
-	m_transform_group_->setVisible(bShowTransform);
+	if (m_game_app_ != nullptr)
+	{
+		m_last_scene_revision_ = m_game_app_->GetSceneRevision();
+	}
+	RebuildReflectionProperties();
+	RefreshScrollContentGeometry();
 }
 
 void DetailPanelWidget::OnAabbDebugToggled(bool bIsChecked)
 {
-	if (m_is_syncing_controls_ || m_game_app_ == nullptr)
+	if (m_game_app_ == nullptr)
 	{
 		return;
 	}
@@ -368,14 +258,12 @@ void DetailPanelWidget::SyncAabbDebugCheckbox()
 		return;
 	}
 
-	m_is_syncing_controls_ = true;
 	m_aabb_debug_checkbox_->setChecked(m_game_app_->IsSelectedActorAabbDebugEnabled());
-	m_is_syncing_controls_ = false;
 }
 
 void DetailPanelWidget::OnObbDebugToggled(bool bIsChecked)
 {
-	if (m_is_syncing_controls_ || m_game_app_ == nullptr)
+	if (m_game_app_ == nullptr)
 	{
 		return;
 	}
@@ -390,14 +278,12 @@ void DetailPanelWidget::SyncObbDebugCheckbox()
 		return;
 	}
 
-	m_is_syncing_controls_ = true;
 	m_obb_debug_checkbox_->setChecked(m_game_app_->IsSelectedActorObbDebugEnabled());
-	m_is_syncing_controls_ = false;
 }
 
 void DetailPanelWidget::OnSectionBoundsDebugToggled(bool bIsChecked)
 {
-	if (m_is_syncing_controls_ || m_game_app_ == nullptr)
+	if (m_game_app_ == nullptr)
 	{
 		return;
 	}
@@ -412,8 +298,6 @@ void DetailPanelWidget::SyncSectionBoundsDebugCheckbox()
 		return;
 	}
 
-	m_is_syncing_controls_ = true;
 	m_section_bounds_debug_checkbox_->setChecked(
 		m_game_app_->IsSelectedActorSectionBoundsDebugEnabled());
-	m_is_syncing_controls_ = false;
 }

@@ -2,8 +2,26 @@
   "version": 8,
   "configurePresets": [
     {
+      "name": "windows-msvc-base",
+      "hidden": true,
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "architecture": {
+        "value": "x64",
+        "strategy": "external"
+      },
+      "toolset": {
+        "value": "host=x64",
+        "strategy": "external"
+      }
+    },
+    {
       "name": "x64-Debug",
       "displayName": "x64-Debug",
+      "inherits": "windows-msvc-base",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/out/build/${presetName}",
       "cacheVariables": {
