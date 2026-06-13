@@ -18,6 +18,7 @@
 !/.cursor/**
 !/docs/**
 !/openspec/**
+!/Tools/**
 
 # --- OpenSpecTest 子项目 ---
 /OpenSpecTest/*
