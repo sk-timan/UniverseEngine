@@ -6,6 +6,7 @@
 !/.cursor/
 !/docs/
 !/openspec/
+!/Tools/
 !/OpenSpecTest/
 !/build_win.bat
 !/CMakeLists.txt
