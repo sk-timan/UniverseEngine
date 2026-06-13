@@ -39,9 +39,13 @@
 !/OpenSpecTest/src/**
 !/OpenSpecTest/thirdparty/**
 
-# thirdparty 预编译产物（本地保留，不提交）
-/OpenSpecTest/thirdparty/**/bin/
-/OpenSpecTest/thirdparty/**/lib/Debug/
-/OpenSpecTest/thirdparty/**/lib/Release/
+# thirdparty 预编译产物：仅提交链接所需的小文件与 Release 运行时
+/OpenSpecTest/thirdparty/**/bin/Debug/
 /OpenSpecTest/thirdparty/**/*.pdb
 /OpenSpecTest/thirdparty/**/*.exp
+/OpenSpecTest/thirdparty/**/lib/Debug/*
+!/OpenSpecTest/thirdparty/**/lib/Debug/libclang.lib
+/OpenSpecTest/thirdparty/**/lib/Release/*
+!/OpenSpecTest/thirdparty/**/lib/Release/libclang.lib
+/OpenSpecTest/thirdparty/**/bin/Release/*
+!/OpenSpecTest/thirdparty/**/bin/Release/libclang.dll
